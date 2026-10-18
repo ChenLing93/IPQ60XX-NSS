@@ -1,72 +1,91 @@
 #!/usr/bin/env bash
-# 合并「公共配置 + 变体配置」生成 .config
+# @id: prepare-feeds.sh
+# 拉取官方 feeds，并按需追加第三方 feeds + 安装需要的插件包
 #
-# 用法: prepare-config.sh <base.config> <variant.config> <输出.config> [enable_thirdparty] [extra_packages]
-# 例:   prepare-config.sh ../config/base.config ../config/nowifi.config .config yes "luci-app-wol"
-#
-# 为什么不能直接 cat：
-#   OpenWrt 的 toplevel.mk 在 prepare-tmpinfo 阶段会把 .config 当 makefile include 进来，
-#   于是 .config 里任何一行都会被 GNU make 解析。带中文/全角符号的注释、BOM、CR、零宽字符
-#   都可能让 make 报 “empty variable name” 之类的错（哪怕内容看起来完全正常）。
-#   所以这里只输出 kconfig 真正需要的两种行：
-#       CONFIG_xxx=...
-#       # CONFIG_xxx is not set
-#   注释留在 config/*.config 里给人看就够了，不进 .config。
+# 用法: prepare-feeds.sh <feeds.extra.conf> [enable_thirdparty]
+# 说明：在 openwrt/ 目录下执行
 set -euo pipefail
-BASE="${1:?用法: prepare-config.sh <base.config> <variant.config> <输出.config> [enable_thirdparty] [extra_packages]}"
-VARIANT_CONF="${2:?缺少变体配置}"
-OUT="${3:?缺少输出文件}"
-ENABLE_THIRD_PARTY="${4:-yes}"
-EXTRA_PACKAGES="${5:-}"
-if [ ! -f "$BASE" ]; then
-  echo "::error::找不到公共配置 $BASE"
+
+if [ "$#" -lt 1 ]; then
+  echo "::error::prepare-feeds.sh 需要 1~2 个参数，实际收到 $# 个"
+  echo "  用法: prepare-feeds.sh <feeds.extra.conf> [enable_thirdparty]"
+  echo "  工作流里的正确调用: prepare-feeds.sh <仓库绝对路径>/config/feeds.extra.conf <yes|no>"
   exit 1
 fi
-if [ ! -f "$VARIANT_CONF" ] || [ ! -s "$VARIANT_CONF" ]; then
-  echo "::error::缺少或空的变体配置 $VARIANT_CONF"
-  exit 1
-fi
-RAW="$(mktemp)"
-# 1) 先拼起来（保留注释，后面统一过滤）
-{
-  cat "$BASE"
-  printf '\n\n'
-  cat "$VARIANT_CONF"
-} > "$RAW"
-# 2) 去掉 BOM 和 CR（Windows 上另存/粘贴过的文件常带这两个）
-sed -i -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' "$RAW"
-# 3) 关掉第三方插件时，先按注释标记删掉整段（必须在过滤注释之前做）
+
+EXTRA_FEEDS="${1:?用法: prepare-feeds.sh <feeds.extra.conf> [enable_thirdparty]}"
+ENABLE_THIRD_PARTY="${2:-yes}"
+
+# 相对路径转绝对，避免后面路径混乱
+case "$EXTRA_FEEDS" in
+  /*) ;;
+  *) EXTRA_FEEDS="$(pwd)/$EXTRA_FEEDS" ;;
+esac
+
+[ -f feeds.conf ] || cp feeds.conf.default feeds.conf
+
+echo "===== 官方 feeds ====="
+./scripts/feeds update -a || ./scripts/feeds update -a
+./scripts/feeds install -a
+
 if [ "$ENABLE_THIRD_PARTY" != "yes" ]; then
-  sed -i '/# >>> THIRD-PARTY-BEGIN/,/# <<< THIRD-PARTY-END/d' "$RAW"
-  echo "已剔除第三方插件配置段"
+  echo "===== 跳过第三方 feeds（enable_thirdparty=no）====="
+  exit 0
 fi
-# 4) 只保留 kconfig 认的行
-#    注意键名里会有连字符（kmod-qca-nss-drv、luci-app-store、miniupnpd-nftables），
-#    字符类必须含 '-'，否则这些行会被误删。
-grep -E '^(CONFIG_[A-Za-z0-9_.-]+=|# CONFIG_[A-Za-z0-9_.-]+ is not set)' "$RAW" > "$OUT" || true
-# 5) 记录真正可疑的行（既不是注释/空行，也不是合法赋值），方便排查
-SUSPICIOUS="$(grep -nvE '^([[:space:]]*#|[[:space:]]*$|CONFIG_[A-Za-z0-9_.-]+=.*)$' "$RAW" | head -5 || true)"
-if [ -n "$SUSPICIOUS" ]; then
-  echo "::warning::config 里有非标准行（已丢弃，下面是前几条）："
-  echo "$SUSPICIOUS"
-fi
-for pkg in $EXTRA_PACKAGES; do
-  echo "CONFIG_PACKAGE_${pkg}=y" >> "$OUT"
-done
-# 6) 基本体检：太少说明 base/variant 没读到
-LINES="$(wc -l < "$OUT" | tr -d ' ')"
-if [ "$LINES" -lt 20 ]; then
-  echo "::error::生成的 .config 只有 $LINES 行，明显不对（base/variant 没读到？）"
-  echo "--- .config 全文 ---"
-  cat "$OUT"
-  rm -f "$RAW"
+
+if [ ! -f "$EXTRA_FEEDS" ]; then
+  echo "::error::缺少第三方 feed 清单 $EXTRA_FEEDS"
   exit 1
 fi
-echo "已生成 $OUT"
-echo "  变体: $(basename "$VARIANT_CONF")"
-echo "  第三方插件: $ENABLE_THIRD_PARTY"
-echo "  额外包: ${EXTRA_PACKAGES:-（无）}"
-echo "  有效行数: $LINES"
-echo "  前三行:"
-head -3 "$OUT" | sed 's/^/    /'
-rm -f "$RAW"
+
+echo "===== 追加第三方 feeds ====="
+while IFS= read -r line; do
+  case "$line" in
+    ''|'#'*) continue ;;
+  esac
+  if grep -qxF "$line" feeds.conf; then
+    echo "  已存在: $line"
+  else
+    echo "  + $line"
+    echo "$line" >> feeds.conf
+  fi
+done < "$EXTRA_FEEDS"
+
+echo "===== 拉取第三方 feeds ====="
+./scripts/feeds update istore kenzo gecoo wechat
+
+echo "===== 安装插件包 ====="
+# 逐个装：某个包名不存在时不至于把整步带崩，最后统一告警；
+# 真正的判定交给 verify-config.sh（看 .config 里有没有 =y）
+failed=""
+for pkg in \
+    luci-app-store luci-lib-taskd \
+    ddnsto luci-app-ddnsto \
+    luci-app-wechatpush \
+    gecoosac luci-app-gecoosac ; do
+  if ./scripts/feeds install "$pkg" >/dev/null 2>&1; then
+    echo "  [ok] $pkg"
+  else
+    echo "  [!]  $pkg 安装失败（可能包名变了）"
+    failed="$failed $pkg"
+  fi
+done
+
+if [ -n "$failed" ]; then
+  echo "::warning::以下包 feeds install 失败：$failed —— 下一步会给出具体诊断"
+fi
+
+# ----- Aurora 主题：仓库根目录就是包本体，不能当 feed 用 -----
+# 当 feed 用时目录名会变成 feeds/<feed名>，而 luci.mk 的 LUCI_NAME 取的是目录名，
+# 包名会算成 "<feed名>" 而不是 luci-theme-aurora，菜单分类也会错。
+# 所以按上游 README 的做法：直接 clone 到 package/luci-theme-aurora。
+echo "===== Aurora 主题 ====="
+THEME_REPO="https://github.com/ChenLing93/luci-theme-aurora.git"
+THEME_DIR="package/luci-theme-aurora"
+if [ -d "$THEME_DIR" ]; then
+  echo "  已存在: $THEME_DIR"
+elif git clone --depth 1 "$THEME_REPO" "$THEME_DIR"; then
+  echo "  [ok] 已克隆到 $THEME_DIR"
+else
+  echo "::warning::Aurora 主题 clone 失败，本次固件不带主题（不影响 NSS 和其它插件）"
+fi
