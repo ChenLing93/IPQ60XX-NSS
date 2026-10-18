@@ -1,0 +1,58 @@
+name: Build IPQ6000 NOWIFI
+
+# 无无线版本：镜像里不含 ath11k / wpad / hostapd，开机不可能起无线
+# 适合当纯有线路由 / 旁路由 AC 用；第三方插件照样带
+# 真正干活的是 .github/workflows/_build.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: '固件源码仓库地址'
+        required: false
+        default: 'https://github.com/LiBwrt/LibWrt.git'
+        type: string
+      source_branch:
+        description: '源码分支（NSS 分支）'
+        required: false
+        default: '25.12-nss'
+        type: string
+      extra_packages:
+        description: '追加软件包（空格分隔，可留空）'
+        required: false
+        default: ''
+        type: string
+      enable_thirdparty:
+        description: '第三方插件（iStore / 微信推送 / DDNSTO / 集客AC）'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+      publish_release:
+        description: '构建成功后发布 Release'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+  schedule:
+    # 每周六 02:00（北京时间）自动跟上游编一次 NOWIFI
+    - cron: '0 18 * * 5'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipq6000-nowifi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      variant: nowifi
+      source_repo: ${{ inputs.source_repo || 'https://github.com/LiBwrt/LibWrt.git' }}
+      source_branch: ${{ inputs.source_branch || '25.12-nss' }}
+      extra_packages: ${{ inputs.extra_packages || '' }}
+      enable_thirdparty: ${{ inputs.enable_thirdparty || 'yes' }}
+      publish_release: ${{ inputs.publish_release || 'yes' }}

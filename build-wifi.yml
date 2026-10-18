@@ -1,0 +1,54 @@
+name: Build IPQ6000 WiFi
+
+# 带无线版本：ath11k + wpad + NSS 无线卸载（满血）
+# 真正干活的是 .github/workflows/_build.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: '固件源码仓库地址'
+        required: false
+        default: 'https://github.com/LiBwrt/LibWrt.git'
+        type: string
+      source_branch:
+        description: '源码分支（NSS 分支）'
+        required: false
+        default: '25.12-nss'
+        type: string
+      extra_packages:
+        description: '追加软件包（空格分隔，可留空）'
+        required: false
+        default: ''
+        type: string
+      enable_thirdparty:
+        description: '第三方插件（iStore / 微信推送 / DDNSTO / 集客AC）'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+      publish_release:
+        description: '构建成功后发布 Release'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipq6000-wifi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+    with:
+      variant: wifi
+      source_repo: ${{ inputs.source_repo || 'https://github.com/LiBwrt/LibWrt.git' }}
+      source_branch: ${{ inputs.source_branch || '25.12-nss' }}
+      extra_packages: ${{ inputs.extra_packages || '' }}
+      enable_thirdparty: ${{ inputs.enable_thirdparty || 'yes' }}
+      publish_release: ${{ inputs.publish_release || 'yes' }}
