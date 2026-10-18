@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 拉取官方 feeds，并按需追加第三方 feeds + 只安装需要的插件包
+# 拉取官方 feeds，并按需追加第三方 feeds + 安装需要的插件包
 #
 # 用法: prepare-feeds.sh <feeds.extra.conf> [enable_thirdparty]
 # 说明：在 openwrt/ 目录下执行
@@ -44,12 +44,25 @@ while IFS= read -r line; do
 done < "$EXTRA_FEEDS"
 
 echo "===== 拉取第三方 feeds ====="
-./scripts/feeds update kenzo gecoo wechat
+./scripts/feeds update istore kenzo gecoo wechat
 
 echo "===== 安装插件包 ====="
-# 只装这几个，避免把 kenzok8 整个 feed 的 300+ 包都挂进来
-./scripts/feeds install \
-  luci-app-store luci-lib-taskd \
-  ddnsto luci-app-ddnsto \
-  luci-app-wechatpush \
-  gecoosac luci-app-gecoosac
+# 逐个装：某个包名不存在时不至于把整步带崩，最后统一告警；
+# 真正的判定交给 verify-config.sh（看 .config 里有没有 =y）
+failed=""
+for pkg in \
+    luci-app-store luci-lib-taskd \
+    ddnsto luci-app-ddnsto \
+    luci-app-wechatpush \
+    gecoosac luci-app-gecoosac ; do
+  if ./scripts/feeds install "$pkg" >/dev/null 2>&1; then
+    echo "  [ok] $pkg"
+  else
+    echo "  [!]  $pkg 安装失败（可能包名变了）"
+    failed="$failed $pkg"
+  fi
+done
+
+if [ -n "$failed" ]; then
+  echo "::warning::以下包 feeds install 失败：$failed —— 下一步会给出具体诊断"
+fi
