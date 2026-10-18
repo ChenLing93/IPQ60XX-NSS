@@ -61,34 +61,41 @@ jobs:
       - name: 校验脚本完整性
         run: |
           set -euo pipefail
-          # 每个脚本第 2 行都有 @id 指纹；文件被弄混、粘错、用了旧版本时这里 5 秒内就报出来，
-          # 而不是等跑到一半出现「某个脚本报另一个脚本的错误」这种怪现象。
+          # 按「内容指纹」判断，而不是看 @id 那行注释：
+          #   - 只有关键代码缺失（= 文件被弄混/贴错/版本差太多）才失败；
+          #   - 仅仅少一行 @id（内容其实是对的旧版）只给提示，不挡编译。
           echo "===== scripts/ 概览 ====="
           for f in scripts/*.sh; do
             printf '%5s 行  %-28s  %s\n' "$(wc -l < "$f" | tr -d ' ')" "$f" "$(sed -n '2p' "$f")"
           done
+          echo
 
           fail=0
-          check_id() {
-            f="$1"; want="$2"
+          check_script() {
+            f="$1"; fp="$2"
             if [ ! -f "$f" ]; then
               echo "::error::缺少脚本 $f"
               fail=1
               return
             fi
-            got="$(sed -n '2p' "$f")"
-            case "$got" in
-              *"$want"*) ;;
-              *) echo "::error::$f 的内容不对：第 2 行应为 '# @id: $want'，实际是：$got"; fail=1 ;;
+            if ! grep -qF "$fp" "$f"; then
+              echo "::error::$f 里找不到关键内容 '$fp' → 文件被弄混了或版本差太多"
+              fail=1
+              return
+            fi
+            case "$(sed -n '2p' "$f")" in
+              *"$(basename "$f")"*) echo "  [ok]   $f" ;;
+              *) echo "  [note] $f 没有 @id 标记（旧一点但内容对，继续）" ;;
             esac
           }
-          check_id scripts/prepare-feeds.sh    "prepare-feeds.sh"
-          check_id scripts/prepare-config.sh   "prepare-config.sh"
-          check_id scripts/verify-config.sh    "verify-config.sh"
-          check_id scripts/collect-firmware.sh "collect-firmware.sh"
+
+          check_script scripts/prepare-feeds.sh    'feeds update istore'
+          check_script scripts/prepare-config.sh   'THIRD-PARTY-BEGIN'
+          check_script scripts/verify-config.sh    'diagnose_pkg'
+          check_script scripts/collect-firmware.sh 'tar -czf'
 
           if [ "$fail" -ne 0 ]; then
-            echo "::error::scripts/ 里的文件被弄混了（或还是旧版本）。用发行包里的 scripts/ 整个覆盖后再跑。"
+            echo "::error::scripts/ 里有文件内容不对，用发行包里的 scripts/ 整个覆盖后再跑。"
             exit 1
           fi
           echo "脚本完整性检查通过"
