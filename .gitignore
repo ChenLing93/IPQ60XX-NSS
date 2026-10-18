@@ -1,0 +1,4 @@
+# 本地编译时产生的目录（CI 里不会产生）
+openwrt/
+dist/
+*.tar.gz
