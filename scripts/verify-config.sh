@@ -3,6 +3,10 @@
 #
 # 用法: verify-config.sh <wifi|nowifi> [enable_thirdparty]
 # 说明：在 openwrt/ 目录下执行，读 ./.config
+#
+# 策略：
+#   机型 / NSS / UPnP 缺失  -> 硬失败（固件不可用）
+#   第三方插件缺失          -> 只告警 + 自动打印诊断（不阻断 3 小时的编译）
 set -euo pipefail
 
 VARIANT="${1:?用法: verify-config.sh <wifi|nowifi> [enable_thirdparty]}"
@@ -17,8 +21,40 @@ fi
 
 fail=0
 missing=""
+warn_missing=""
 
 has() { grep -qx "CONFIG_PACKAGE_$1=y" "$CONFIG_FILE"; }
+
+# 某个包没被选中时，把原因摊开：目录在不在、kconfig 符号在不在、依赖是什么
+diagnose_pkg() {
+  local p="$1" dirs sym
+  echo "---- 诊断：$p ----"
+
+  dirs="$(ls -d package/feeds/*/"$p" 2>/dev/null || true)"
+  if [ -z "$dirs" ]; then
+    echo "  [x] package/feeds/*/$p 不存在 → feeds 没把它装进来（包名不对或该 feed 里没有）"
+  else
+    echo "  [ok] 源码目录: $(echo "$dirs" | tr '\n' ' ')"
+  fi
+
+  if [ -f tmp/.config-package.in ]; then
+    if grep -qx "config PACKAGE_${p}" tmp/.config-package.in; then
+      echo "  [ok] kconfig 符号存在，相关依赖："
+      awk -v pat="config PACKAGE_${p}\$" '
+        $0 ~ pat { f = 1; next }
+        f && /^config / { f = 0 }
+        f && /(depends on|select|default)/ { print "       " $0 }
+      ' tmp/.config-package.in | head -12
+    else
+      echo "  [x] tmp/.config-package.in 里没有该符号 → 包没进入构建元数据"
+    fi
+  else
+    echo "  [?] 没有 tmp/.config-package.in（defconfig 没生成？）"
+  fi
+
+  echo "  .config 中与该包有关的行："
+  grep -E "PACKAGE_${p}(=|[[:space:]])" "$CONFIG_FILE" | head -5 || true
+}
 
 echo "========== 机型 =========="
 for dev in $DEVICES; do
@@ -54,7 +90,7 @@ if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
       echo "  [OK] $p"
     else
       echo "  [缺失] $p"
-      missing="$missing $p"
+      warn_missing="$warn_missing $p"
     fi
   done
 else
@@ -80,7 +116,6 @@ case "$VARIANT" in
     fi
     ;;
   nowifi)
-    # 无无线版本：ath11k / wpad / hostapd 一个都不许有
     bad="$(grep -E '^CONFIG_PACKAGE_(kmod-ath11k[a-z0-9-]*|wpad[a-z0-9-]*|hostapd[a-z0-9-]*)=y$' "$CONFIG_FILE" || true)"
     if [ -n "$bad" ]; then
       echo "::error::NOWIFI 版本里仍然启用了无线组件："
@@ -99,12 +134,23 @@ esac
 echo "========== NSS / 无线选项 =========="
 grep -E '^CONFIG_(NSS_FIRMWARE_VERSION|ATH11K_MEM_PROFILE)[A-Z0-9_]*=' "$CONFIG_FILE" || true
 
+# 第三方插件缺失：先告警 + 诊断，不阻断编译
+if [ -n "$warn_missing" ]; then
+  echo ""
+  echo "========== 第三方插件缺失诊断 =========="
+  for p in $warn_missing; do
+    diagnose_pkg "$p"
+  done
+  echo "::warning::以下第三方插件没有被选中：$warn_missing —— 固件会照常编译，但里面没有它们"
+  echo "（想强制要求它们全都在，请自行把它们从告警改成硬失败，或先把 enable_thirdparty 设为 no）"
+fi
+
+# 公共包 / 变体包缺失：硬失败
 if [ -n "$missing" ]; then
-  echo "::error::以下软件包没有被选中：$missing"
-  echo "可能原因：feeds 没拉到 / 包名变化 / 依赖缺失。当前 feeds 里的候选："
-  ./scripts/feeds list -n 2>/dev/null \
-    | grep -E '^(luci-app-store|luci-app-ddnsto|ddnsto|luci-app-wechatpush|gecoosac|luci-app-gecoosac|luci-app-upnp|miniupnpd[^ ]*)$' || true
-  echo "只想先出个可用固件：把 enable_thirdparty 设为 no 再跑一次。"
+  echo "::error::以下关键包没有被选中：$missing"
+  for p in $missing; do
+    diagnose_pkg "$p" || true
+  done
   exit 1
 fi
 
