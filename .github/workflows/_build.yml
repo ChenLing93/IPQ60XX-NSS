@@ -1,6 +1,8 @@
 name: _Build IPQ6000 NSS (reusable)
+
 # 这是被 build-wifi.yml / build-nowifi.yml 调用的可复用工作流，不要直接运行。
 # 两个版本共用它，差异只靠输入参数 variant 决定，避免两份 400 行 YAML 各改一半。
+
 on:
   workflow_call:
     inputs:
@@ -28,17 +30,21 @@ on:
         required: false
         type: string
         default: 'yes'
+
 permissions:
   contents: write
+
 env:
   SOURCE_DIR: openwrt
   # 三个机型一次编译（共享同一套工具链，比分开跑快得多）
   DEVICES: "redmi_ax5 zn_m2 link_nn6000-v2"
   # 固件产物目录（相对源码根目录）
   BIN_DIR: bin/targets/qualcommax/ipq60xx
+
 defaults:
   run:
     shell: bash
+
 jobs:
   build:
     name: ipq60xx / ${{ inputs.variant }} / NSS
@@ -47,9 +53,46 @@ jobs:
     env:
       VARIANT: ${{ inputs.variant }}
       ENABLE_THIRD_PARTY: ${{ inputs.enable_thirdparty }}
+
     steps:
       - name: 检出工作流仓库
         uses: actions/checkout@v4
+
+      - name: 校验脚本完整性
+        run: |
+          set -euo pipefail
+          # 每个脚本第 2 行都有 @id 指纹；文件被弄混、粘错、用了旧版本时这里 5 秒内就报出来，
+          # 而不是等跑到一半出现「某个脚本报另一个脚本的错误」这种怪现象。
+          echo "===== scripts/ 概览 ====="
+          for f in scripts/*.sh; do
+            printf '%5s 行  %-28s  %s\n' "$(wc -l < "$f" | tr -d ' ')" "$f" "$(sed -n '2p' "$f")"
+          done
+
+          fail=0
+          check_id() {
+            f="$1"; want="$2"
+            if [ ! -f "$f" ]; then
+              echo "::error::缺少脚本 $f"
+              fail=1
+              return
+            fi
+            got="$(sed -n '2p' "$f")"
+            case "$got" in
+              *"$want"*) ;;
+              *) echo "::error::$f 的内容不对：第 2 行应为 '# @id: $want'，实际是：$got"; fail=1 ;;
+            esac
+          }
+          check_id scripts/prepare-feeds.sh    "prepare-feeds.sh"
+          check_id scripts/prepare-config.sh   "prepare-config.sh"
+          check_id scripts/verify-config.sh    "verify-config.sh"
+          check_id scripts/collect-firmware.sh "collect-firmware.sh"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::scripts/ 里的文件被弄混了（或还是旧版本）。用发行包里的 scripts/ 整个覆盖后再跑。"
+            exit 1
+          fi
+          echo "脚本完整性检查通过"
+
       - name: 参数与环境
         run: |
           set -euo pipefail
@@ -62,6 +105,7 @@ jobs:
           echo "源码         : ${{ inputs.source_repo }} @ ${{ inputs.source_branch }}"
           echo "机型         : $DEVICES"
           df -h /
+
       - name: 释放磁盘空间
         run: |
           echo "清理前："
@@ -72,6 +116,7 @@ jobs:
           sudo docker image prune -a -f || true
           echo "清理后："
           df -h /
+
       - name: 安装编译依赖
         run: |
           sudo apt-get update -qq
@@ -80,6 +125,7 @@ jobs:
             gettext git libncurses-dev libssl-dev \
             python3 python3-dev python3-setuptools \
             rsync swig unzip zlib1g-dev file wget bc time libelf-dev libtool-bin zip cpio zstd
+
       - name: 拉取固件源码
         env:
           REPO: ${{ inputs.source_repo }}
@@ -95,9 +141,11 @@ jobs:
             sleep 10
           done
           test -d "$SOURCE_DIR/.git"
+
           cd "$SOURCE_DIR"
           echo "提交     : $(git log -1 --format='%h %ad %s' --date=short)"
           echo "内核版本 : $(grep -m1 'KERNEL_PATCHVER' target/linux/qualcommax/Makefile | tr -d ' ' || echo '未找到')"
+
       - name: 更新并安装 feeds
         working-directory: openwrt
         env:
@@ -105,6 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" "$ENABLE_THIRD_PARTY"
+
       - name: 生成并校验配置
         working-directory: openwrt
         run: |
@@ -115,6 +164,7 @@ jobs:
             .config \
             "$ENABLE_THIRD_PARTY" \
             "${{ inputs.extra_packages }}"
+
           # OpenWrt 会把 .config 当 makefile include，先自己验一遍：
           # 真有问题时这里就能指名道姓，而不是等 prepare-tmpinfo 报个空变量名
           echo "===== .config 可解析性预检 ====="
@@ -125,14 +175,17 @@ jobs:
             exit 1
           fi
           echo "  预检通过"
+
           make defconfig
           bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY"
+
       - name: 预下载源码包
         working-directory: openwrt
         run: |
           set -euo pipefail
           make -j"$(nproc)" download || make -j1 download \
             || echo "::warning::个别源码包下载失败，编译阶段会再次尝试，可忽略"
+
       - name: 开始编译（约 2~3 小时）
         working-directory: openwrt
         run: |
@@ -141,10 +194,13 @@ jobs:
             echo "::warning::并行编译失败，改用单线程重跑以输出完整错误日志"
             make -j1 V=s
           fi
+
       - name: 收集固件并校验最终镜像
         run: |
           set -euo pipefail
+
           bash scripts/collect-firmware.sh "$SOURCE_DIR/$BIN_DIR" "dist/$VARIANT" "$DEVICES"
+
           manifests=( "$SOURCE_DIR/$BIN_DIR"/*.manifest )
           if [ ! -f "${manifests[0]}" ]; then
             echo "::error::$SOURCE_DIR/$BIN_DIR 下没有 manifest，编译可能没产物"
@@ -152,13 +208,16 @@ jobs:
           fi
           manifest="${manifests[0]}"
           kernel_line="$(grep -m1 '^kernel ' "$manifest" || true)"
+
           fatal_pkgs="kmod-qca-nss-drv kmod-qca-nss-ecm kmod-qca-nss-dp luci-app-upnp miniupnpd-nftables"
           extra_pkgs=""
           if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
             extra_pkgs="luci-app-store luci-app-ddnsto ddnsto luci-app-wechatpush luci-theme-aurora gecoosac luci-app-gecoosac"
           fi
+
           fatal_missing=""
           warn_missing=""
+
           check_present() {
             for p in $1; do
               if grep -qE "^${p} " "$manifest"; then
@@ -169,14 +228,17 @@ jobs:
               fi
             done
           }
+
           rm -f /tmp/missing_fatal /tmp/missing_warn
           touch /tmp/missing_fatal /tmp/missing_warn
+
           check_present "$fatal_pkgs" fatal
           if [ -n "$extra_pkgs" ]; then
             check_present "$extra_pkgs" warn
           fi
           fatal_missing="$(tr '\n' ' ' < /tmp/missing_fatal)"
           warn_missing="$(tr '\n' ' ' < /tmp/missing_warn)"
+
           # —— 变体一致性：wifi 必须有 ath11k/wpad，nowifi 必须一个都没有 ——
           echo "========== 变体校验（$VARIANT）=========="
           if [ "$VARIANT" = "wifi" ]; then
@@ -204,6 +266,7 @@ jobs:
               echo "  [OK] 镜像里没有 ath11k / wpad / hostapd"
             fi
           fi
+
           {
             echo "## 编译结果（$VARIANT）"
             echo ""
@@ -233,6 +296,7 @@ jobs:
               echo '```'
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
           if [ -n "$warn_missing" ]; then
             echo "::warning::以下第三方插件没进固件：$warn_missing（固件照常输出，可稍后用 opkg/apk 补装）"
           fi
@@ -240,6 +304,7 @@ jobs:
             echo "::error::关键包缺失，固件不符合预期：$fatal_missing"
             exit 1
           fi
+
       - name: 上传工作流产物
         uses: actions/upload-artifact@v4
         with:
@@ -247,6 +312,7 @@ jobs:
           path: dist/${{ inputs.variant }}/*
           if-no-files-found: error
           retention-days: 30
+
       - name: 发布 Release
         if: ${{ inputs.publish_release == 'yes' }}
         env:
@@ -260,15 +326,19 @@ jobs:
           else
             variant_name="NOWIFI 版（不含 ath11k/wpad，开机不会起无线）"
           fi
+
           cat > "dist/$VARIANT/release-notes.md" <<EOF
           IPQ6000（qualcommax/ipq60xx）+ 满血 NSS 固件 —— $variant_name
-          - 源码：${{ inputs.source_repo }} 
+
+          - 源码：${{ inputs.source_repo }}
           - 分支：${{ inputs.source_branch }}（$short_sha）
           - 机型：红米 AX5 / 兆能 ZN-M2 / Link NN6000 v2（均 1G 内存）
           - 插件：miniupnpd(UPnP)、iStore、微信推送、DDNSTO、集客软AC（第三方开关：$ENABLE_THIRD_PARTY）
           - 编译时间（UTC）：$(date -u '+%Y-%m-%d %H:%M')
+
           刷机前请备份原厂分区，并确认机型与镜像文件名一致。
           EOF
+
           gh release create "$tag" "dist/$VARIANT"/*.tar.gz \
             --repo "$GITHUB_REPOSITORY" \
             --title "$tag" \
