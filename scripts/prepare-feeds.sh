@@ -140,26 +140,40 @@ clone_pkg "https://github.com/ChenLing93/luci-theme-aurora.git" \
 clone_pkg "https://github.com/eamonxg/luci-app-aurora-config.git" \
           "package/luci-app-aurora-config" "Aurora 设置插件"
 
-# ----- 所有包就位后：清扫描缓存 → 全量重扫一次 -----
-# 为什么必须清：扫描器把「有哪些包」记在 tmp/info/.files-packageinfo.mk，这个文件
-# 是在 make 读取阶段被 -include 的；如果它在本次运行中才被重建，make 不会重新读它，
-# 于是「刚装好的包」这一轮里等于不存在 —— 表现为 .config-package.in 没有符号、且毫无报错。
-# 我们前面为装 8 个包跑了好几遍 feeds install，正好会踩进这种状态（iStore 就是这么丢的）。
-echo "===== 清理扫描缓存，全量重扫 ====="
-rm -rf tmp/info \
-       tmp/.packageinfo tmp/.targetinfo \
-       tmp/.config-package.in tmp/.config-target.in tmp/.config-feeds.in \
-       tmp/.packagedeps tmp/.packageauxvars tmp/.packageusergroup tmp/.build 2>/dev/null || true
-make -s prepare-tmpinfo >/dev/null 2>&1 || true
+# ----- 所有包就位后：强制重扫一次元数据 -----
+echo "===== 强制重新扫描第三方包 ====="
+# scan.mk 把「有哪些包目录」记在 tmp/info/.files-packageinfo.mk，并 -include 它。
+# 这个文件如果是在当轮运行中才被重建，make 不会重读 —— 新装的包这一轮就等于不存在。
+# 预先删掉它，make 会在读取阶段重建并自动 re-exec，新包就能被正确收进来。
+# 只删这一个清单 + 派生结果，比整目录 rm -rf 更轻，也不会牵连其它缓存。
+rm -f tmp/info/.files-packageinfo.mk \
+      tmp/info/.files-packageinfo.stamp \
+      tmp/.packageinfo \
+      tmp/.config-package.in 2>/dev/null || true
+echo "  已清理扫描清单缓存，开始重扫（完整输出：/tmp/tmpinfo.log）"
+if make prepare-tmpinfo > /tmp/tmpinfo.log 2>&1; then
+  echo "  重扫成功"
+else
+  echo "::error::prepare-tmpinfo 失败（元数据生成阶段出错）"
+fi
+echo "  --- 重扫日志末尾 ---"
+tail -25 /tmp/tmpinfo.log | sed 's/^/       /' || true
 
-for p in luci-app-store luci-theme-aurora luci-app-aurora-config \
-         luci-app-wechatpush luci-app-ddnsto gecoosac luci-app-gecoosac ; do
-  if grep -qx "config PACKAGE_${p}" tmp/.config-package.in 2>/dev/null; then
-    echo "  [ok] $p 已入库"
-  else
-    echo "  [x] $p 未入库"
-  fi
-done
+# 没有 .config-package.in 时，下面逐个包判断毫无意义（全会是「未入库」）
+if [ ! -s tmp/.config-package.in ]; then
+  echo "  [x] tmp/.config-package.in 没生成 —— 上一步重扫失败了（原因见上面日志）"
+  echo "::warning::元数据没生成，第三方包这轮无法入库；编译阶段的 defconfig 会再试一次"
+else
+  echo "  元数据已生成，逐个确认："
+  for p in luci-app-store luci-theme-aurora luci-app-aurora-config \
+           luci-app-wechatpush luci-app-ddnsto gecoosac luci-app-gecoosac ; do
+    if grep -qx "config PACKAGE_${p}" tmp/.config-package.in 2>/dev/null; then
+      echo "    [ok] $p 已入库"
+    else
+      echo "    [x] $p 未入库"
+    fi
+  done
+fi
 
 # 只在 iStore 真的缺的时候才打印证据，正常情况不刷屏
 if { [ -e package/feeds/istore/luci-app-store ] || [ -e package/luci-app-store ]; } \
