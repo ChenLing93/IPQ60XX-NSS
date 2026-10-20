@@ -26,6 +26,16 @@ on:
         required: false
         type: string
         default: 'yes'
+      strict_thirdparty:
+        description: '第三方插件缺失时是否直接失败（yes=配置阶段就停，省掉 2~3 小时空跑）'
+        required: false
+        type: string
+        default: 'yes'
+      enable_docker:
+        description: '是否内置 Docker（dockerd+containerd+runc+CLI 约 60MB，128MB flash 的机型放不下）'
+        required: false
+        type: string
+        default: 'no'
       publish_release:
         required: false
         type: string
@@ -49,10 +59,14 @@ jobs:
   build:
     name: ipq60xx / ${{ inputs.variant }} / NSS
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    # 加了 sing-box(Go) + HomeProxy + DiskMan 之后编译时间明显变长，
+    # GitHub 单个 job 上限是 360 分钟，这里顶格
+    timeout-minutes: 360
     env:
       VARIANT: ${{ inputs.variant }}
       ENABLE_THIRD_PARTY: ${{ inputs.enable_thirdparty }}
+      STRICT_THIRD_PARTY: ${{ inputs.strict_thirdparty }}
+      ENABLE_DOCKER: ${{ inputs.enable_docker }}
 
     steps:
       - name: 检出工作流仓库
@@ -89,7 +103,7 @@ jobs:
             esac
           }
 
-          check_script scripts/prepare-feeds.sh    'feeds update istore'
+          check_script scripts/prepare-feeds.sh    'feeds install -p istore'
           check_script scripts/prepare-config.sh   'THIRD-PARTY-BEGIN'
           check_script scripts/verify-config.sh    'diagnose_pkg'
           check_script scripts/collect-firmware.sh 'tar -czf'
@@ -153,13 +167,25 @@ jobs:
           echo "提交     : $(git log -1 --format='%h %ad %s' --date=short)"
           echo "内核版本 : $(grep -m1 'KERNEL_PATCHVER' target/linux/qualcommax/Makefile | tr -d ' ' || echo '未找到')"
 
+      - name: 注入自定义 rootfs 文件（默认 IP 等）
+        run: |
+          set -euo pipefail
+          # overlay/ 会并进 base-files，随基础包进镜像。
+          # 为什么放 base-files 而不是 openwrt/files/：base-files 是必装包，
+          # 这个路径是 100% 会被打进 rootfs 的，不依赖 buildroot 对 files/ 的处理方式。
+          mkdir -p "$SOURCE_DIR/package/base-files/files"
+          cp -a overlay/. "$SOURCE_DIR/package/base-files/files/"
+          test -f "$SOURCE_DIR/package/base-files/files/etc/uci-defaults/99-custom-lan-ip"
+          echo "已注入："
+          find "$SOURCE_DIR/package/base-files/files/etc/uci-defaults" -type f -printf '  %p\n'
+
       - name: 更新并安装 feeds
         working-directory: openwrt
         env:
           EXTRA_FEEDS: ${{ github.workspace }}/config/feeds.extra.conf
         run: |
           set -euo pipefail
-          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" "$ENABLE_THIRD_PARTY"
+          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" "$ENABLE_THIRD_PARTY" "$ENABLE_DOCKER"
 
       - name: 生成并校验配置
         working-directory: openwrt
@@ -170,7 +196,8 @@ jobs:
             "../config/${VARIANT}.config" \
             .config \
             "$ENABLE_THIRD_PARTY" \
-            "${{ inputs.extra_packages }}"
+            "${{ inputs.extra_packages }}" \
+            "$ENABLE_DOCKER"
 
           # OpenWrt 会把 .config 当 makefile include，先自己验一遍：
           # 真有问题时这里就能指名道姓，而不是等 prepare-tmpinfo 报个空变量名
@@ -184,7 +211,26 @@ jobs:
           echo "  预检通过"
 
           make defconfig
-          bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY"
+          bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY" "$STRICT_THIRD_PARTY" "$ENABLE_DOCKER"
+
+          # 额外包（运行时输入 extra_packages）单独再确认一遍：
+          # kconfig 对不存在的符号是静默丢弃的，不查就等于没加。
+          if [ -n "${{ inputs.extra_packages }}" ]; then
+            echo "===== 额外包确认 ====="
+            bad=""
+            for p in ${{ inputs.extra_packages }}; do
+              if grep -qx "CONFIG_PACKAGE_${p}=y" .config; then
+                echo "  [OK] $p"
+              else
+                echo "  [缺失] $p"
+                bad="$bad $p"
+              fi
+            done
+            if [ -n "$bad" ]; then
+              echo "::error::extra_packages 里的包没进配置：$bad （符号不存在 / 依赖不满足 / 包名写错）"
+              exit 1
+            fi
+          fi
 
       - name: 预下载源码包
         working-directory: openwrt
@@ -208,6 +254,14 @@ jobs:
 
           bash scripts/collect-firmware.sh "$SOURCE_DIR/$BIN_DIR" "dist/$VARIANT" "$DEVICES"
 
+          # 默认 IP 靠 overlay 里的 uci-defaults，确认它真的进了 rootfs
+          if find "$SOURCE_DIR"/build_dir/target-*/root-*/etc/uci-defaults \
+                  -name '99-custom-lan-ip' 2>/dev/null | grep -q .; then
+            echo "  [OK] 默认 IP 脚本已进 rootfs（192.168.10.254）"
+          else
+            echo "::warning::rootfs 里没找到 99-custom-lan-ip，刷完可能还是 192.168.1.1"
+          fi
+
           manifests=( "$SOURCE_DIR/$BIN_DIR"/*.manifest )
           if [ ! -f "${manifests[0]}" ]; then
             echo "::error::$SOURCE_DIR/$BIN_DIR 下没有 manifest，编译可能没产物"
@@ -216,10 +270,18 @@ jobs:
           manifest="${manifests[0]}"
           kernel_line="$(grep -m1 '^kernel ' "$manifest" || true)"
 
-          fatal_pkgs="kmod-qca-nss-drv kmod-qca-nss-ecm kmod-qca-nss-dp luci-app-upnp miniupnpd-nftables"
+          fatal_pkgs="kmod-qca-nss-drv kmod-qca-nss-ecm kmod-qca-nss-dp luci-app-upnp miniupnpd-nftables
+                      kmod-usb-storage kmod-fs-vfat kmod-fs-exfat kmod-fs-ntfs3 block-mount
+                      luci-app-nlbwmon"
           extra_pkgs=""
           if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
-            extra_pkgs="luci-app-store luci-app-ddnsto ddnsto luci-app-wechatpush luci-theme-aurora gecoosac luci-app-gecoosac"
+            extra_pkgs="luci-app-store luci-lib-taskd taskd luci-app-diskman luci-app-partexp \
+                        luci-app-homeproxy sing-box luci-app-autoreboot \
+                        luci-app-ddnsto ddnsto luci-app-wechatpush \
+                        luci-theme-aurora luci-app-aurora-config gecoosac luci-app-gecoosac"
+          fi
+          if [ "$ENABLE_DOCKER" = "yes" ]; then
+            extra_pkgs="$extra_pkgs luci-app-dockerman luci-lib-docker dockerd containerd runc docker"
           fi
 
           fatal_missing=""
