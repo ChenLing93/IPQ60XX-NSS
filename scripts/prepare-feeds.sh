@@ -13,6 +13,7 @@ if [ "$#" -lt 1 ]; then
 fi
 EXTRA_FEEDS="${1:?用法: prepare-feeds.sh <feeds.extra.conf> [enable_thirdparty]}"
 ENABLE_THIRD_PARTY="${2:-yes}"
+ENABLE_DOCKER="${3:-no}"
 # 相对路径转绝对，避免后面路径混乱
 case "$EXTRA_FEEDS" in
   /*) ;;
@@ -42,38 +43,48 @@ while IFS= read -r line; do
     echo "$line" >> feeds.conf
   fi
 done < "$EXTRA_FEEDS"
-echo "===== 拉取第三方 feeds ====="
-./scripts/feeds update istore kenzo gecoo wechat
-echo "===== 安装插件包 ====="
-failed=""
-# ---- iStore：按官方 README 的接法 ----
-#   ./scripts/feeds update istore
-#   ./scripts/feeds install -d y -p istore luci-app-store
-# -p istore : 同名包优先用 istore feed（防止被其它 feed 的同名副本顶掉）
-# -d y      : 触发 refresh_config('y') → make oldconfig CONFDEFAULT=y；
-#             这棵树的 CONFDEFAULT=y 等价于 --allyesconfig，
-#             只有在 .config 还不存在时才是无害的 —— 我们正是先装 feeds 再生成 .config。
-#             万一以后顺序变了（.config 已存在），这里自动退回不带 -d 的写法。
-if [ -f .config ]; then
-  echo "  [!] .config 已存在，为免 allyesconfig 全开，本次不带 -d y"
-  ISTORE_ARGS="-p istore"
-else
-  ISTORE_ARGS="-d y -p istore"
-fi
+# 要 update 哪些 feed：从清单文件里解析，而不是写死 istore kenzo gecoo wechat。
+# 写死的后果——在 feeds.extra.conf 里加一个新 feed 永远不会被拉；删掉/改名一个，
+# 这个 ./scripts/feeds update 会报未知 feed，加上 set -e 直接把这步带崩。
+third_feeds="$(grep -vE '^[[:space:]]*(#|$)' "$EXTRA_FEEDS" | awk '{print $2}' | tr '\n' ' ' || true)"
+echo "===== 拉取第三方 feeds: $third_feeds ====="
 # shellcheck disable=SC2086
-if ./scripts/feeds install $ISTORE_ARGS luci-app-store; then
-  echo "  [ok] luci-app-store（feed: istore）"
+./scripts/feeds update $third_feeds
+echo "===== 安装 iStore ====="
+# 官方 feed（istoreos/istore）的包在 luci/ 子目录下，feeds 扫描深度是 5，能找到；
+# 它的 Makefile 用的是 include $(TOPDIR)/feeds/luci/luci.mk（绝对路径），
+# 所以装进 package/feeds/istore/luci-app-store 就能正常编。
+# kenzo feed 里有一份内容完全相同的副本（git tree sha 一致），用来兜底。
+# 注意：不要带 -d y —— 那是给「已有 .config」时改默认值用的，这里 .config 还没生成，
+# 带了只会让日志里多一句 oldconfig，没有别的作用。
+istore_ok=0
+if ./scripts/feeds install -p istore luci-app-store luci-lib-taskd luci-lib-xterm taskd > /tmp/istore-install.log 2>&1; then
+  istore_ok=1
+  echo "  [ok] iStore 来自 istore feed"
 else
-  echo "  [!]  luci-app-store 安装失败"
-  failed="$failed luci-app-store"
+  echo "  [!]  istore feed 安装失败，回退到 kenzo feed"
+  tail -20 /tmp/istore-install.log | sed 's/^/       /' || true
+  if ./scripts/feeds install -p kenzo luci-app-store luci-lib-taskd luci-lib-xterm taskd >> /tmp/istore-install.log 2>&1; then
+    istore_ok=1
+    echo "  [ok] iStore 来自 kenzo feed"
+  else
+    echo "  [!]  kenzo feed 也没装上"
+    tail -20 /tmp/istore-install.log | sed 's/^/       /' || true
+  fi
 fi
-echo "  (iStore 19.07+ 需要 luci-compat，已在 config/base.config 里选中)"
-# ---- 其余插件：逐个装，某个失败不至于把整步带崩 ----
+if [ "$istore_ok" -eq 0 ]; then
+  echo "::warning::iStore 两个 feed 都没装成功，本次固件不含它（原因见上面日志）"
+fi
+echo "===== 安装其余第三方包 ====="
+failed=""
+# 逐个装，某个失败不至于把整步带崩；不带 -p，让 feeds 按 feeds.conf 顺序找
+# （istore 在最前，所以 luci-app-store 优先用官方那份）
 for pkg in \
-    luci-lib-taskd \
     ddnsto luci-app-ddnsto \
     luci-app-wechatpush \
-    gecoosac luci-app-gecoosac ; do
+    gecoosac luci-app-gecoosac \
+    luci-app-diskman \
+    luci-app-partexp ; do
   if ./scripts/feeds install "$pkg" >/dev/null 2>&1; then
     echo "  [ok] $pkg"
   else
@@ -81,30 +92,32 @@ for pkg in \
     failed="$failed $pkg"
   fi
 done
+# Docker：默认不开（enable_docker=no），打开了才装
+if [ "$ENABLE_DOCKER" = "yes" ]; then
+  echo "===== 安装 Docker 相关 ====="
+  # luci-lib-docker 官方 luci feed 里没有，必须从 dockerlib feed 取
+  if ./scripts/feeds install -p dockerlib luci-lib-docker >/dev/null 2>&1; then
+    echo "  [ok] luci-lib-docker（feed: dockerlib）"
+  else
+    echo "  [!]  luci-lib-docker 安装失败 —— dockerman 依赖它，缺了就编不进去"
+    failed="$failed luci-lib-docker"
+  fi
+  for pkg in luci-app-dockerman docker dockerd containerd runc tini cgroupfs-mount ; do
+    if ./scripts/feeds install "$pkg" >/dev/null 2>&1; then
+      echo "  [ok] $pkg"
+    else
+      echo "  [!]  $pkg 安装失败（官方 packages feed 里应该有，检查 feeds 是否完整）"
+      failed="$failed $pkg"
+    fi
+  done
+fi
 if [ -n "$failed" ]; then
   echo "::warning::以下包 feeds install 失败：$failed —— 后面会给出具体诊断"
 fi
-# ----- 补 build 签名 -----
-# scan.mk 是这么发现包的：
-#   find -L package -name Makefile | xargs grep -E 'call (BuildPackage|KernelPackage|...)'
-# 命中的目录才会被 DUMP 成元数据；缺这行签名的包会被静默跳过。
-echo "===== 检查 build 签名 ====="
-for pkg in luci-app-store luci-lib-taskd luci-lib-xterm taskd ddnsto luci-app-ddnsto \
-           luci-app-wechatpush gecoosac luci-app-gecoosac luci-theme-aurora luci-app-aurora-config ; do
-  for d in package/feeds/*/"$pkg" package/"$pkg"; do
-    [ -f "$d/Makefile" ] || continue
-    if ! grep -qE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' "$d/Makefile"; then
-      echo "  [fix] $d/Makefile 缺少 build 签名，补一行注释"
-      printf '\n# call BuildPackage - OpenWrt buildroot signature\n' >> "$d/Makefile"
-    fi
-  done
-done
-echo "  签名检查完成"
-# ----- Aurora 主题 + 设置插件：仓库根目录就是包本体，不能当 feed 用 -----
-# 当 feed 用时目录名会变成 feeds/<feed名>，而 luci.mk 的 LUCI_NAME 取的是目录名，
-# 包名会算成 "<feed名>" 而不是 luci-theme-aurora，菜单分类也会错。
-# 所以按上游 README 的做法：直接 clone 到 package/<包名>。
-echo "===== Aurora 主题 + 设置插件 ====="
+# ----- 直接从仓库取包（这些仓库不是 feed 结构）-----
+# 判据：Makefile 里用的是相对 include（../../luci.mk、../../lang/golang/golang-package.mk），
+# 或者仓库根目录就是包本体。当 feed 用会算错包名，或者相对路径直接对不上。
+echo "===== 从仓库取包：HomeProxy / 定时重启 / sing-box / Aurora ====="
 clone_pkg() {
   repo="$1"; dir="$2"; name="$3"
   if [ -d "$dir" ]; then
@@ -115,12 +128,84 @@ clone_pkg() {
     echo "::warning::$name clone 失败，本次固件不含它（不影响 NSS 和其它插件）"
   fi
 }
-# 主题本体（自带 uci-defaults，装上即设为默认主题）
+# 只取仓库里的某个子目录（immortalwrt/luci 有 200+ 个包，整仓 clone 又慢又占地方）
+sparse_clone_pkg() {
+  repo="$1"; srcpath="$2"; dir="$3"; name="$4"
+  if [ -d "$dir" ]; then
+    echo "  已存在: $dir"
+    return 0
+  fi
+  tmp="$(mktemp -d)"
+  if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1 \
+     && git -C "$tmp/repo" sparse-checkout set "$srcpath" >/dev/null 2>&1 \
+     && [ -e "$tmp/repo/$srcpath/Makefile" ]; then
+    mkdir -p "$(dirname "$dir")"
+    cp -a "$tmp/repo/$srcpath" "$dir"
+    echo "  [ok] $name -> $dir"
+    rm -rf "$tmp"
+    return 0
+  fi
+  echo "::warning::$name 拉取失败（$repo 的 $srcpath），本次固件不含它"
+  rm -rf "$tmp"
+  return 1
+}
+# HomeProxy（sing-box 的 LuCI 前端）与 定时重启：都在 immortalwrt/luci 的 applications/ 下
+sparse_clone_pkg "https://github.com/immortalwrt/luci.git" \
+                 "applications/luci-app-homeproxy" \
+                 "package/iluci/applications/luci-app-homeproxy" "HomeProxy"
+sparse_clone_pkg "https://github.com/immortalwrt/luci.git" \
+                 "applications/luci-app-autoreboot" \
+                 "package/iluci/applications/luci-app-autoreboot" "定时重启"
+# 这两个包都写 include ../../luci.mk。放在 package/iluci/applications/<包>/ 下,
+# ../../ 正好是 package/iluci/，所以把本棵树自己的 feeds/luci/luci.mk 复制过去。
+# 用本树的 luci.mk（而不是 immortalwrt 的），LuCI 主体版本才对得上。
+if [ -d package/iluci ]; then
+  if [ -f feeds/luci/luci.mk ]; then
+    cp feeds/luci/luci.mk package/iluci/luci.mk
+    echo "  [ok] 已放置 package/iluci/luci.mk（供 ../../luci.mk 使用）"
+  else
+    echo "::warning::找不到 feeds/luci/luci.mk，HomeProxy/定时重启 会因 include 失败而编不进去"
+  fi
+fi
+# sing-box：immortalwrt/packages 的 net/sing-box，HomeProxy 的运行时依赖
+sparse_clone_pkg "https://github.com/immortalwrt/packages.git" \
+                 "net/sing-box" \
+                 "package/sing-box" "sing-box"
+if [ -f package/sing-box/Makefile ]; then
+  # 它假设自己在 feeds/packages/net/sing-box 下，写的是相对 include，
+  # 放到 package/sing-box 就指到别处去了，改成绝对路径。
+  sed -i 's#include ../../lang/golang/golang-package.mk#include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk#' \
+    package/sing-box/Makefile
+  if grep -q 'feeds/packages/lang/golang/golang-package.mk' package/sing-box/Makefile; then
+    echo "  [ok] sing-box Makefile 的 golang 路径已改写"
+  else
+    echo "::warning::sing-box Makefile 改写没生效，golang-package.mk 可能找不到"
+  fi
+fi
+# Aurora 主题 + 设置插件：仓库根目录就是包本体
 clone_pkg "https://github.com/ChenLing93/luci-theme-aurora.git" \
           "package/luci-theme-aurora" "Aurora 主题"
-# 主题设置界面：5 套预设、配色令牌、导航布局、悬浮工具栏、主题商店
 clone_pkg "https://github.com/eamonxg/luci-app-aurora-config.git" \
           "package/luci-app-aurora-config" "Aurora 设置插件"
+# ----- 补 build 签名（放在所有包都到位之后）-----
+# scan.mk 是这么发现包的：
+#   find -L package -name Makefile | xargs grep -E 'call (BuildPackage|KernelPackage|...)'
+# 命中的目录才会被 DUMP 成元数据；缺这行签名的包会被静默跳过。
+echo "===== 检查 build 签名 ====="
+for pkg in luci-app-store luci-lib-taskd luci-lib-xterm taskd ddnsto luci-app-ddnsto \
+           luci-app-wechatpush gecoosac luci-app-gecoosac luci-theme-aurora \
+           luci-app-aurora-config luci-app-diskman luci-app-partexp luci-app-nlbwmon \
+           luci-app-homeproxy luci-app-autoreboot sing-box \
+           luci-lib-docker luci-app-dockerman dockerd containerd runc ; do
+  for d in package/feeds/*/"$pkg" package/"$pkg" package/*/"$pkg" package/*/*/"$pkg"; do
+    [ -f "$d/Makefile" ] || continue
+    if ! grep -qE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' "$d/Makefile"; then
+      echo "  [fix] $d/Makefile 缺少 build 签名，补一行注释"
+      printf '\n# call BuildPackage - OpenWrt buildroot signature\n' >> "$d/Makefile"
+    fi
+  done
+done
+echo "  签名检查完成"
 # ----- 所有包就位后：强制重扫一次元数据 -----
 echo "===== 强制重新扫描第三方包 ====="
 # scan.mk 把「有哪些包目录」记在 tmp/info/.files-packageinfo.mk，并 -include 它。
@@ -144,28 +229,39 @@ if [ ! -s tmp/.config-package.in ]; then
   echo "  [x] tmp/.config-package.in 没生成 —— 上一步重扫失败了（原因见上面日志）"
   echo "::warning::元数据没生成，第三方包这轮无法入库；编译阶段的 defconfig 会再试一次"
 else
-  echo "  元数据已生成，逐个确认："
-  for p in luci-app-store luci-theme-aurora luci-app-aurora-config \
-           luci-app-wechatpush luci-app-ddnsto gecoosac luci-app-gecoosac ; do
+  echo "  元数据已生成，逐个确认（区分「源码没拉到」和「源码在但 Makefile 有问题」）："
+  check_pkgs="luci-app-store luci-lib-taskd luci-lib-xterm taskd \
+              luci-theme-aurora luci-app-aurora-config \
+              luci-app-wechatpush luci-app-ddnsto gecoosac luci-app-gecoosac \
+              luci-app-diskman luci-app-partexp luci-app-nlbwmon \
+              luci-app-homeproxy sing-box luci-app-autoreboot"
+  if [ "$ENABLE_DOCKER" = "yes" ]; then
+    check_pkgs="$check_pkgs luci-lib-docker luci-app-dockerman dockerd containerd runc"
+  fi
+  for p in $check_pkgs ; do
     if grep -qx "config PACKAGE_${p}" tmp/.config-package.in 2>/dev/null; then
       echo "    [ok] $p 已入库"
+    elif compgen -G "package/feeds/*/$p" >/dev/null \
+      || compgen -G "package/$p" >/dev/null \
+      || compgen -G "package/*/$p" >/dev/null \
+      || compgen -G "package/*/*/$p" >/dev/null; then
+      echo "    [x] $p 源码在，但没入库（Makefile dump 失败，看 /tmp/tmpinfo.log 和 logs/）"
     else
-      echo "    [x] $p 未入库"
+      echo "    [x] $p 源码没拉到（feed 里没这个包，或 clone 失败）"
     fi
   done
 fi
-# 只在 iStore 真的缺的时候才打印证据，正常情况不刷屏
-if { [ -e package/feeds/istore/luci-app-store ] || [ -e package/luci-app-store ]; } \
-   && ! grep -qx 'config PACKAGE_luci-app-store' tmp/.config-package.in 2>/dev/null; then
+# iStore 是历史上最容易「拉得到但编不进去」的一个，单独留一份取证
+if ! grep -qx 'config PACKAGE_luci-app-store' tmp/.config-package.in 2>/dev/null; then
   echo "----- iStore 未入库，逐层取证 -----"
   echo "  1) find 能否发现它的 Makefile"
-  { find -L package -maxdepth 5 -name Makefile 2>/dev/null | grep 'luci-app-store' | sed 's/^/       /' ; } || echo "       (find 没找到)"
+  { find -L package -maxdepth 6 -name Makefile 2>/dev/null | grep 'luci-app-store' | sed 's/^/       /' ; } || echo "       (find 没找到)"
   echo "  2) Makefile 里的 build 签名命中次数"
-  { grep -cE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' package/feeds/istore/luci-app-store/Makefile 2>/dev/null | sed 's/^/       /' ; } || echo "       (读不到 Makefile)"
+  { grep -cE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' package/feeds/*/luci-app-store/Makefile 2>/dev/null | sed 's/^/       /' ; } || echo "       (读不到 Makefile)"
   echo "  3) FILELIST 里有没有它"
   { grep -h 'luci-app-store' tmp/info/.files-packageinfo-* 2>/dev/null | sed 's/^/       /' ; } || echo "       (FILELIST 里没有)"
   echo "  4) tmp/info 下的元数据片段（含隐藏文件）"
-  { ls -1a tmp/info/ 2>/dev/null | grep -i 'istore' | sed 's/^/       /' ; } || echo "       (没有 istore 片段)"
+  { ls -1a tmp/info/ 2>/dev/null | grep -i 'istore\|store' | sed 's/^/       /' ; } || echo "       (没有 istore 片段)"
   echo "  5) DUMP 失败日志"
   dlog="$(find logs -path '*luci-app-store/dump.txt' 2>/dev/null | head -1 || true)"
   if [ -n "$dlog" ]; then
@@ -174,8 +270,9 @@ if { [ -e package/feeds/istore/luci-app-store ] || [ -e package/luci-app-store ]
     echo "       (没有 logs/.../luci-app-store/dump.txt → 没走到 DUMP)"
   fi
   echo "  6) 手动重跑 DUMP（带 TOPDIR，否则 \$(TOPDIR) 为空会报 /feeds/...）"
-  if [ -d package/feeds/istore/luci-app-store ]; then
-    { make -r DUMP=1 FEED=istore TOPDIR="$PWD" -C package/feeds/istore/luci-app-store 2>&1 | tail -30 | sed 's/^/       /' ; } || true
+  store_dir="$(find -L package -maxdepth 6 -type d -name luci-app-store 2>/dev/null | head -1 || true)"
+  if [ -n "$store_dir" ]; then
+    { make -r DUMP=1 FEED=istore TOPDIR="$PWD" -C "$store_dir" 2>&1 | tail -30 | sed 's/^/       /' ; } || true
   fi
   echo "::warning::iStore 未入库，固件会照常编译但不含 iStore（上面是原因）"
 fi
