@@ -27,6 +27,7 @@ VARIANT_CONF="${2:?缺少变体配置}"
 OUT="${3:?缺少输出文件}"
 ENABLE_THIRD_PARTY="${4:-yes}"
 EXTRA_PACKAGES="${5:-}"
+ENABLE_DOCKER="${6:-no}"
 
 if [ ! -f "$BASE" ]; then
   echo "::error::找不到公共配置 $BASE"
@@ -53,6 +54,12 @@ sed -i -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' "$RAW"
 if [ "$ENABLE_THIRD_PARTY" != "yes" ]; then
   sed -i '/# >>> THIRD-PARTY-BEGIN/,/# <<< THIRD-PARTY-END/d' "$RAW"
   echo "已剔除第三方插件配置段"
+fi
+
+# 3b) 关掉 Docker 时删掉 Docker 段（独立开关：第三方插件开着、但不想塞 60MB 的 docker）
+if [ "$ENABLE_DOCKER" != "yes" ]; then
+  sed -i '/# >>> DOCKER-BEGIN/,/# <<< DOCKER-END/d' "$RAW"
+  echo "已剔除 Docker 配置段（enable_docker=$ENABLE_DOCKER）"
 fi
 
 # 4) 只保留 kconfig 认的行
@@ -85,6 +92,7 @@ fi
 echo "已生成 $OUT"
 echo "  变体: $(basename "$VARIANT_CONF")"
 echo "  第三方插件: $ENABLE_THIRD_PARTY"
+echo "  Docker: $ENABLE_DOCKER"
 echo "  额外包: ${EXTRA_PACKAGES:-（无）}"
 echo "  有效行数: $LINES"
 echo "  前三行:"
