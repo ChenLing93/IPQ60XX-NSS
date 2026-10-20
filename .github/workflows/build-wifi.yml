@@ -22,11 +22,23 @@ on:
         default: ''
         type: string
       enable_thirdparty:
-        description: '第三方插件（iStore / 微信推送 / DDNSTO / 集客AC）'
+        description: '第三方插件（iStore / HomeProxy / DiskMan / 微信推送 / DDNSTO / 集客AC / 定时重启）'
         required: false
         default: 'yes'
         type: choice
         options: ['yes', 'no']
+      strict_thirdparty:
+        description: '第三方插件缺失时直接失败（yes=配置阶段就停，省掉 2~3 小时空跑）'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+      enable_docker:
+        description: '内置 Docker（dockerd+containerd+runc+CLI 约 60MB，128MB flash 机型放不下）'
+        required: false
+        default: 'no'
+        type: choice
+        options: ['no', 'yes']
       publish_release:
         description: '构建成功后发布 Release'
         required: false
@@ -51,4 +63,6 @@ jobs:
       source_branch: ${{ inputs.source_branch || '25.12-nss' }}
       extra_packages: ${{ inputs.extra_packages || '' }}
       enable_thirdparty: ${{ inputs.enable_thirdparty || 'yes' }}
+      strict_thirdparty: ${{ inputs.strict_thirdparty || 'yes' }}
+      enable_docker: ${{ inputs.enable_docker || 'no' }}
       publish_release: ${{ inputs.publish_release || 'yes' }}
