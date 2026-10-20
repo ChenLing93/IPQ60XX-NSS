@@ -38,6 +38,25 @@ src_exists() {
     || compgen -G "package/*/$1" >/dev/null 2>&1 \
     || compgen -G "package/*/*/$1" >/dev/null 2>&1
 }
+# scan.mk 把 DUMP 失败原因写在 logs/<扫描目录>/<包路径>/dump.txt，
+# 这一步就是把这些平时没人看的日志打出来 —— 「源码在但元数据里没符号」十有八九在这里
+show_dump_log() {
+  local p="$1" f found=0
+  for f in logs/package/"$p"/dump.txt \
+           logs/package/feeds/*/"$p"/dump.txt \
+           logs/feeds/*/"$p"/dump.txt \
+           logs/feeds/*/*/"$p"/dump.txt ; do
+    if [ -f "$f" ]; then
+      found=1
+      echo "  DUMP 失败日志 $f（末尾 15 行）："
+      tail -15 "$f" | sed 's/^/       /' || true
+    fi
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "  （没有 dump.txt：说明没走到 DUMP，通常是 Makefile 里没有 build 签名）"
+  fi
+  return 0
+}
 
 # 某个包没被选中时，把原因摊开：目录在不在、kconfig 符号在不在、依赖是什么
 diagnose_pkg() {
@@ -72,6 +91,7 @@ diagnose_pkg() {
 
   echo "  .config 中与该包有关的行："
   grep -E "PACKAGE_${p}(=|[[:space:]])" "$CONFIG_FILE" | head -5 || true
+  show_dump_log "$p"
 }
 
 echo "========== 机型 =========="
@@ -117,13 +137,16 @@ for p in kmod-usb-storage-extras kmod-fs-ext4 kmod-fs-btrfs kmod-usb-serial \
 done
 
 echo "========== LED =========="
-for p in kmod-ledtrig-netdev kmod-ledtrig-timer kmod-usb-ledtrig-usbport; do
+for p in kmod-ledtrig-network kmod-usb-ledtrig-usbport ; do
   if has "$p"; then
     echo "  [OK] $p"
   else
     echo "  [缺失] $p"
     missing="$missing $p"
   fi
+done
+for p in kmod-ledtrig-activity kmod-ledtrig-pattern kmod-ledtrig-transient ; do
+  has "$p" || echo "  [提示] $p 没选中（非必需）"
 done
 
 echo "========== 家用常用插件 =========="
