@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# @id: collect-firmware.sh
 # 把 bin/targets/qualcommax/ipq60xx 下各机型的镜像分别打包，便于下载/刷机。
 # 用法: collect-firmware.sh <固件目录> <输出目录> <机型列表>
 #   例: collect-firmware.sh openwrt/bin/targets/qualcommax/ipq60xx dist "redmi_ax5 zn_m2 link_nn6000-v2"
