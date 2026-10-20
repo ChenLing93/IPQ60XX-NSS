@@ -1,0 +1,26 @@
+#!/bin/sh
+# 首次启动把 LAN 改成 192.168.10.254/24，DHCP 池跟着换网段。
+#
+# 这个文件在仓库里的路径是 overlay/etc/uci-defaults/99-custom-lan-ip，
+# 工作流会把它复制到 openwrt/package/base-files/files/ 下面，
+# 跟着 base-files 一起进镜像 —— uci-defaults 里的脚本只在第一次启动跑一次，跑完自动删除。
+#
+# 想换回默认 192.168.1.1：删掉本文件重新编，或者启动后手动 uci set。
+
+# 没有生成过的配置就说明不是第一次启动，直接退出
+[ -f /etc/config/network ] || exit 0
+[ -f /etc/config/dhcp ] || exit 0
+
+uci set network.lan.ipaddr='192.168.10.254'
+uci set network.lan.netmask='255.255.255.0'
+uci -q delete network.lan.gateway
+
+# DHCP 池必须落在新网段里，否则客户端拿不到地址
+uci set dhcp.lan.start='100'
+uci set dhcp.lan.limit='150'
+uci set dhcp.lan.leasetime='12h'
+
+uci commit network
+uci commit dhcp
+
+exit 0
