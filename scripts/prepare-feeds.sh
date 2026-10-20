@@ -50,35 +50,31 @@ third_feeds="$(grep -vE '^[[:space:]]*(#|$)' "$EXTRA_FEEDS" | awk '{print $2}' |
 echo "===== 拉取第三方 feeds: $third_feeds ====="
 # shellcheck disable=SC2086
 ./scripts/feeds update $third_feeds
-echo "===== 安装 iStore ====="
-# 官方 feed（istoreos/istore）的包在 luci/ 子目录下，feeds 扫描深度是 5，能找到；
-# 它的 Makefile 用的是 include $(TOPDIR)/feeds/luci/luci.mk（绝对路径），
-# 所以装进 package/feeds/istore/luci-app-store 就能正常编。
-# kenzo feed 里有一份内容完全相同的副本（git tree sha 一致），用来兜底。
+echo "===== iStore 的运行时依赖 ====="
+# iStore 的界面本体不走 feed（见下面「从仓库取包」一节），但三个运行时依赖从 feed 装最省事。
 # 注意：不要带 -d y —— 那是给「已有 .config」时改默认值用的，这里 .config 还没生成，
 # 带了只会让日志里多一句 oldconfig，没有别的作用。
 istore_ok=0
-if ./scripts/feeds install -p istore luci-app-store luci-lib-taskd luci-lib-xterm taskd > /tmp/istore-install.log 2>&1; then
+if ./scripts/feeds install -p istore luci-lib-taskd luci-lib-xterm taskd > /tmp/istore-install.log 2>&1; then
   istore_ok=1
-  echo "  [ok] iStore 来自 istore feed"
+  echo "  [ok] luci-lib-taskd / luci-lib-xterm / taskd（feed: istore）"
 else
   echo "  [!]  istore feed 安装失败，回退到 kenzo feed"
   tail -20 /tmp/istore-install.log | sed 's/^/       /' || true
-  if ./scripts/feeds install -p kenzo luci-app-store luci-lib-taskd luci-lib-xterm taskd >> /tmp/istore-install.log 2>&1; then
+  if ./scripts/feeds install -p kenzo luci-lib-taskd luci-lib-xterm taskd >> /tmp/istore-install.log 2>&1; then
     istore_ok=1
-    echo "  [ok] iStore 来自 kenzo feed"
+    echo "  [ok] luci-lib-taskd / luci-lib-xterm / taskd（feed: kenzo）"
   else
     echo "  [!]  kenzo feed 也没装上"
     tail -20 /tmp/istore-install.log | sed 's/^/       /' || true
   fi
 fi
 if [ "$istore_ok" -eq 0 ]; then
-  echo "::warning::iStore 两个 feed 都没装成功，本次固件不含它（原因见上面日志）"
+  echo "::warning::iStore 的依赖没装成功，固件里 iStore 大概率打不开（原因见上面日志）"
 fi
 echo "===== 安装其余第三方包 ====="
 failed=""
 # 逐个装，某个失败不至于把整步带崩；不带 -p，让 feeds 按 feeds.conf 顺序找
-# （istore 在最前，所以 luci-app-store 优先用官方那份）
 for pkg in \
     ddnsto luci-app-ddnsto \
     luci-app-wechatpush \
@@ -149,6 +145,39 @@ sparse_clone_pkg() {
   rm -rf "$tmp"
   return 1
 }
+# scan.mk 会把 DUMP 失败的原因写到 logs/<扫描目录>/<包路径>/dump.txt，
+# 但那个目录平时没人看，所以这里直接把末尾几行打出来。
+dump_log() {
+  p="$1"; found=0
+  for f in logs/package/"$p"/dump.txt \
+           logs/package/feeds/*/"$p"/dump.txt \
+           logs/feeds/*/"$p"/dump.txt \
+           logs/feeds/*/*/"$p"/dump.txt ; do
+    if [ -f "$f" ]; then
+      found=1
+      echo "    --- DUMP 日志 $f（末尾 15 行）---"
+      tail -15 "$f" | sed 's/^/       /' || true
+    fi
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "    （没找到 dump.txt —— 说明压根没走到 DUMP，多半是 Makefile 里没有 build 签名）"
+  fi
+  return 0
+}
+# iStore 界面本体：官方 feed 里它在 luci/ 子目录，feeds install 之后是
+# package/feeds/istore/luci-app-store 这种**符号链接**，这棵树上那样 dump 会失败
+# （症状就是「源码在、元数据里没符号」）。改成取实体目录 package/luci-app-store，
+# 它的 Makefile 用 include $(TOPDIR)/feeds/luci/luci.mk（绝对路径），放哪都能编。
+if sparse_clone_pkg "https://github.com/istoreos/istore.git" \
+                    "luci/luci-app-store" \
+                    "package/luci-app-store" "iStore"; then
+  echo "  [ok] iStore 用实体目录（package/luci-app-store）"
+else
+  echo "  [!]  克隆失败，退回用 feed 里的符号链接版本"
+  ./scripts/feeds install -p istore luci-app-store >/dev/null 2>&1 \
+    || ./scripts/feeds install -p kenzo luci-app-store >/dev/null 2>&1 \
+    || echo "::warning::iStore 兜底也失败，这次固件里不会有 iStore"
+fi
 # HomeProxy（sing-box 的 LuCI 前端）与 定时重启：都在 immortalwrt/luci 的 applications/ 下
 sparse_clone_pkg "https://github.com/immortalwrt/luci.git" \
                  "applications/luci-app-homeproxy" \
@@ -229,6 +258,36 @@ if [ ! -s tmp/.config-package.in ]; then
   echo "  [x] tmp/.config-package.in 没生成 —— 上一步重扫失败了（原因见上面日志）"
   echo "::warning::元数据没生成，第三方包这轮无法入库；编译阶段的 defconfig 会再试一次"
 else
+  # ---- iStore 自愈：依赖里有本树不存在的包时，整包会永远选不上 ----
+  # 典型例子：iStore 的 LUCI_DEPENDS 写死了 +libuci-lua +mount-utils，
+  # 25.12 上这两个包要是改名/没了，PACKAGE_luci-app-store 就会被一个恒为 n 的
+  # depends 卡住（现象：符号在，但 .config 里选不上）。这里把不存在的依赖剔掉再重扫一次。
+  if ! grep -qx 'config PACKAGE_luci-app-store' tmp/.config-package.in 2>/dev/null \
+     && [ -f package/luci-app-store/Makefile ]; then
+    echo "  [!] iStore 还没入库，检查它依赖的包在本树里是否都存在"
+    changed=0
+    for dep in $(grep -E '^LUCI_DEPENDS' package/luci-app-store/Makefile | tail -1 \
+                 | grep -oE '\+[A-Za-z0-9_.-]+' | tr -d '+'); do
+      if ! grep -qx "config PACKAGE_${dep}" tmp/.config-package.in; then
+        echo "      [fix] 本树没有 +$dep，从 LUCI_DEPENDS 里去掉"
+        sed -i "s/+${dep}\b//g" package/luci-app-store/Makefile
+        changed=1
+      fi
+    done
+    if [ "$changed" -eq 1 ]; then
+      echo "      改完重扫一次元数据…"
+      rm -f tmp/info/.files-packageinfo.mk tmp/info/.files-packageinfo.stamp \
+            tmp/.packageinfo tmp/.config-package.in 2>/dev/null || true
+      if make prepare-tmpinfo > /tmp/tmpinfo-istore.log 2>&1; then
+        echo "      重扫成功"
+      else
+        echo "::error::iStore 依赖修正后重扫失败"
+        tail -20 /tmp/tmpinfo-istore.log | sed 's/^/       /' || true
+      fi
+    else
+      echo "      依赖都存在于元数据里，所以不是依赖名的问题（看下面的 DUMP 日志）"
+    fi
+  fi
   echo "  元数据已生成，逐个确认（区分「源码没拉到」和「源码在但 Makefile 有问题」）："
   check_pkgs="luci-app-store luci-lib-taskd luci-lib-xterm taskd \
               luci-theme-aurora luci-app-aurora-config \
@@ -245,7 +304,8 @@ else
       || compgen -G "package/$p" >/dev/null \
       || compgen -G "package/*/$p" >/dev/null \
       || compgen -G "package/*/*/$p" >/dev/null; then
-      echo "    [x] $p 源码在，但没入库（Makefile dump 失败，看 /tmp/tmpinfo.log 和 logs/）"
+      echo "    [x] $p 源码在，但没入库（Makefile dump 失败）"
+      dump_log "$p"
     else
       echo "    [x] $p 源码没拉到（feed 里没这个包，或 clone 失败）"
     fi
@@ -257,7 +317,9 @@ if ! grep -qx 'config PACKAGE_luci-app-store' tmp/.config-package.in 2>/dev/null
   echo "  1) find 能否发现它的 Makefile"
   { find -L package -maxdepth 6 -name Makefile 2>/dev/null | grep 'luci-app-store' | sed 's/^/       /' ; } || echo "       (find 没找到)"
   echo "  2) Makefile 里的 build 签名命中次数"
-  { grep -cE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' package/feeds/*/luci-app-store/Makefile 2>/dev/null | sed 's/^/       /' ; } || echo "       (读不到 Makefile)"
+  { grep -cE 'call (Build/DefaultTargets|BuildPackage|KernelPackage)' \
+      package/luci-app-store/Makefile package/feeds/*/luci-app-store/Makefile 2>/dev/null \
+      | sed 's/^/       /' ; } || echo "       (读不到 Makefile)"
   echo "  3) FILELIST 里有没有它"
   { grep -h 'luci-app-store' tmp/info/.files-packageinfo-* 2>/dev/null | sed 's/^/       /' ; } || echo "       (FILELIST 里没有)"
   echo "  4) tmp/info 下的元数据片段（含隐藏文件）"
