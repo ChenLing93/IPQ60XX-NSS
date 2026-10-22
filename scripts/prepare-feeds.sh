@@ -20,6 +20,18 @@ case "$EXTRA_FEEDS" in
   *) EXTRA_FEEDS="$(pwd)/$EXTRA_FEEDS" ;;
 esac
 [ -f feeds.conf ] || cp feeds.conf.default feeds.conf
+
+# 主树 feeds 用的分支（例如 openwrt-25.12）。后面 sparse clone 要跟它保持一致：
+# 不指定分支就会拿 immortalwrt 的默认分支（master），那里的 homeproxy / sing-box
+# 可能已经是给更新内核和更新 LuCI 写的版本，跟这棵树对不上。
+FEED_BRANCH="$(awk -F';' '/^src-git packages /{print $2; exit}' feeds.conf.default 2>/dev/null | tr -d '[:space:]' || true)"
+if [ -z "${FEED_BRANCH:-}" ]; then
+  FEED_BRANCH="openwrt-25.12"
+  echo "  [!] 没能从 feeds.conf.default 解析出分支，sparse clone 用 $FEED_BRANCH"
+else
+  echo "  sparse clone 分支: $FEED_BRANCH"
+fi
+
 echo "===== 官方 feeds ====="
 ./scripts/feeds update -a || ./scripts/feeds update -a
 ./scripts/feeds install -a
@@ -51,21 +63,32 @@ echo "===== 拉取第三方 feeds: $third_feeds ====="
 # shellcheck disable=SC2086
 ./scripts/feeds update $third_feeds
 echo "===== iStore 的运行时依赖 ====="
-# iStore 的界面本体不走 feed（见下面「从仓库取包」一节），但三个运行时依赖从 feed 装最省事。
-# 注意：不要带 -d y —— 那是给「已有 .config」时改默认值用的，这里 .config 还没生成，
-# 带了只会让日志里多一句 oldconfig，没有别的作用。
+# iStore 的界面本体不走 feed（见下面「从仓库取包」一节），三个运行时依赖从 feed 装最省事。
+# 注意两点：
+#   1) 不要带 -d y —— 那是给「已有 .config」改默认值用的，这里 .config 还没生成；
+#   2) feeds install 找不到包时只打 WARNING、退出码仍是 0，所以必须按「目录在不在」判断，
+#      否则会出现「日志 [ok]、实际没装」的假成功（iStore 以前就这么骗过人）。
+try_istore_deps() {
+  local feed="$1" n=0 d
+  ./scripts/feeds install -p "$feed" luci-lib-taskd luci-lib-xterm taskd \
+    > /tmp/istore-install.log 2>&1 || true
+  for d in luci-lib-taskd luci-lib-xterm taskd ; do
+    compgen -G "package/feeds/*/$d" >/dev/null 2>&1 && n=$((n + 1))
+  done
+  [ "$n" -eq 3 ]
+}
 istore_ok=0
-if ./scripts/feeds install -p istore luci-lib-taskd luci-lib-xterm taskd > /tmp/istore-install.log 2>&1; then
+if try_istore_deps istore ; then
   istore_ok=1
-  echo "  [ok] luci-lib-taskd / luci-lib-xterm / taskd（feed: istore）"
+  echo "  [ok] luci-lib-taskd / luci-lib-xterm / taskd（feed: istore，已按目录确认）"
 else
-  echo "  [!]  istore feed 安装失败，回退到 kenzo feed"
+  echo "  [!]  istore feed 没装全（日志：/tmp/istore-install.log），回退到 kenzo feed"
   tail -20 /tmp/istore-install.log | sed 's/^/       /' || true
-  if ./scripts/feeds install -p kenzo luci-lib-taskd luci-lib-xterm taskd >> /tmp/istore-install.log 2>&1; then
+  if try_istore_deps kenzo ; then
     istore_ok=1
-    echo "  [ok] luci-lib-taskd / luci-lib-xterm / taskd（feed: kenzo）"
+    echo "  [ok] luci-lib-taskd / luci-lib-xterm / taskd（feed: kenzo，已按目录确认）"
   else
-    echo "  [!]  kenzo feed 也没装上"
+    echo "  [!]  kenzo feed 也没装全"
     tail -20 /tmp/istore-install.log | sed 's/^/       /' || true
   fi
 fi
@@ -81,10 +104,12 @@ for pkg in \
     gecoosac luci-app-gecoosac \
     luci-app-diskman \
     luci-app-partexp ; do
-  if ./scripts/feeds install "$pkg" >/dev/null 2>&1; then
+  # 同样按目录判断，不信退出码（feeds 找不到包也是 0）
+  if ./scripts/feeds install "$pkg" >/dev/null 2>&1 \
+     && compgen -G "package/feeds/*/$pkg" >/dev/null 2>&1; then
     echo "  [ok] $pkg"
   else
-    echo "  [!]  $pkg 安装失败（可能包名变了）"
+    echo "  [!]  $pkg 安装失败或没落地（包名变了 / 该 feed 里没有）"
     failed="$failed $pkg"
   fi
 done
@@ -126,13 +151,29 @@ clone_pkg() {
 }
 # 只取仓库里的某个子目录（immortalwrt/luci 有 200+ 个包，整仓 clone 又慢又占地方）
 sparse_clone_pkg() {
-  repo="$1"; srcpath="$2"; dir="$3"; name="$4"
+  repo="$1"; srcpath="$2"; dir="$3"; name="$4"; branch="${5:-}"
   if [ -d "$dir" ]; then
     echo "  已存在: $dir"
     return 0
   fi
   tmp="$(mktemp -d)"
-  if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1 \
+  clone_ok=0
+  # 指定了分支就按分支浅克隆；分支不存在时自动退回默认分支，别让整个包拉不到
+  if [ -n "$branch" ]; then
+    if git clone --depth 1 --filter=blob:none --sparse --branch "$branch" \
+         "$repo" "$tmp/repo" >/dev/null 2>&1; then
+      clone_ok=1
+    else
+      echo "  [!] $name：分支 $branch 拉不到，退回默认分支（版本可能和主树不匹配）"
+      rm -rf "$tmp/repo"
+    fi
+  fi
+  if [ "$clone_ok" -eq 0 ]; then
+    if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1; then
+      clone_ok=1
+    fi
+  fi
+  if [ "$clone_ok" -eq 1 ] \
      && git -C "$tmp/repo" sparse-checkout set "$srcpath" >/dev/null 2>&1 \
      && [ -e "$tmp/repo/$srcpath/Makefile" ]; then
     mkdir -p "$(dirname "$dir")"
@@ -181,10 +222,10 @@ fi
 # HomeProxy（sing-box 的 LuCI 前端）与 定时重启：都在 immortalwrt/luci 的 applications/ 下
 sparse_clone_pkg "https://github.com/immortalwrt/luci.git" \
                  "applications/luci-app-homeproxy" \
-                 "package/iluci/applications/luci-app-homeproxy" "HomeProxy"
+                 "package/iluci/applications/luci-app-homeproxy" "HomeProxy" "$FEED_BRANCH"
 sparse_clone_pkg "https://github.com/immortalwrt/luci.git" \
                  "applications/luci-app-autoreboot" \
-                 "package/iluci/applications/luci-app-autoreboot" "定时重启"
+                 "package/iluci/applications/luci-app-autoreboot" "定时重启" "$FEED_BRANCH"
 # 这两个包都写 include ../../luci.mk。放在 package/iluci/applications/<包>/ 下,
 # ../../ 正好是 package/iluci/，所以把本棵树自己的 feeds/luci/luci.mk 复制过去。
 # 用本树的 luci.mk（而不是 immortalwrt 的），LuCI 主体版本才对得上。
@@ -199,7 +240,7 @@ fi
 # sing-box：immortalwrt/packages 的 net/sing-box，HomeProxy 的运行时依赖
 sparse_clone_pkg "https://github.com/immortalwrt/packages.git" \
                  "net/sing-box" \
-                 "package/sing-box" "sing-box"
+                 "package/sing-box" "sing-box" "$FEED_BRANCH"
 if [ -f package/sing-box/Makefile ]; then
   # 它假设自己在 feeds/packages/net/sing-box 下，写的是相对 include，
   # 放到 package/sing-box 就指到别处去了，改成绝对路径。
