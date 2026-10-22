@@ -1,12 +1,23 @@
 # IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版
 
-红米 AX5、兆能 ZN-M2、Link NN6000 v2（都是 IPQ6000，均已改 1G 内存）的 GitHub Actions 编译工程。
+红米 AX5、红米 AX5 JDC（`redmi_ax5-jdcloud`）、兆能 ZN-M2、Link NN6000 v2（都是 IPQ6000）的 GitHub Actions 编译工程。
 一次编译产出**两套可选固件**：
 
 | 版本 | Workflow | 无线 | 体积 | 适用 |
 | --- | --- | --- | --- | --- |
 | **WiFi 版** | `Build IPQ6000 WiFi` | ath11k + wpad + NSS 无线卸载 | 大一些 | 当无线主路由用 |
 | **NOWIFI 版** | `Build IPQ6000 NOWIFI` | **镜像里不含 ath11k/wpad/hostapd，开机不可能起无线** | 小一些 | 纯有线路由 / 旁路由 / 集客 AC 主机 |
+
+机型又按**存储类型**分两类并行编译（`device_class` 可选 `all` / `nand` / `emmc`）：
+
+| 类 | 机型 | 存储 | Docker |
+| --- | --- | --- | --- |
+| `nand` | `redmi_ax5`、`zn_m2` | 128MB NAND | **不带**（放不下） |
+| `emmc` | `redmi_ax5-jdcloud`、`link_nn6000-v2` | eMMC | **默认带** |
+
+> 为什么拆两类而不是一个 job 编全部：Docker 的 `CONFIG_PACKAGE_docker=y` 是全局的，
+> 想只给 eMMC 机型加，只能用 `CONFIG_TARGET_DEVICE_PACKAGES_*` + `TARGET_PER_DEVICE_ROOTFS=y`，
+> 而那会跟 NOWIFI「在 `.config` 里关掉 ath11k」的做法打架。拆 job 还顺带避开了 6 小时上限。
 
 两版共用同一个可复用工作流，差异只在 `config/wifi.config` 和 `config/nowifi.config`，不会出现「改了 A 忘了改 B」。
 
@@ -15,7 +26,7 @@
 
 ---
 
-## 一、先说清楚「6.18」
+## 一、先说清楚「6.12」
 
 1. OpenWrt 官方 main 的 `qualcommax/ipq60xx` **确实是 Linux 6.18**，但它**没有** `redmi_ax5` / `zn_m2` / `link_nn6000-v2` 这三个机型，也**不带 NSS 硬件卸载**。
 2. 真正「6.18 + NSS」的是 `openwrt-ppe-nss` 那类补丁树，同样不含这三款机型。
@@ -98,11 +109,17 @@ kmod-qca-nss-drv-wifi-meshmgr（无线 mesh 卸载模块）
 
 ```
 libwrt-qualcommax-ipq60xx-redmi_ax5-squashfs-sysupgrade.bin
+libwrt-qualcommax-ipq60xx-redmi_ax5-jdcloud-squashfs-sysupgrade.bin
 libwrt-qualcommax-ipq60xx-zn_m2-squashfs-sysupgrade.bin
 libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 ```
 
-（不同机型可能还有 `factory.bin` / `*.ubi` 等，`机型-files.txt` 里列全。）
+（不同机型可能还有 `factory.bin` / `*.ubi` 等，`机型-files.txt` 里列全。eMMC 机型首次刷入要用 `factory.bin`。）
+
+**固件版本里带编译时间**：版本号形如 `25.12-nss+nand.20261022-1630`（`<分支>+<机型类>.<北京时间>`），
+刷完在 LuCI 概览页的「固件版本」能看到；另外镜像里有 `/etc/build-info` 记录编译时间、commit、机型类、Docker 开关等，
+随时 `cat /etc/build-info` 就能确认这台机器跑的是哪一次编译。
+镜像**文件名不变**（用的是 `VERSION_DIST_SANITIZED`），所以刷机时认名字不会因为版本号变化而困惑。
 
 - 已在跑 OpenWrt：`sysupgrade -n 文件`（换源建议不保留配置）。
 - 原厂首次刷入：流程按机型不同（uboot Web / breed / 先刷过渡固件），按该机型的 OpenWrt 设备页操作。
@@ -115,7 +132,8 @@ libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 
 - **加包**：运行时填 `extra_packages`，或写进 `config/base.config`（`CONFIG_PACKAGE_xxx=y`）。
 - **只去掉某个第三方插件**：删 `base.config` 里对应两三行；全去掉就把 `enable_thirdparty` 设为 `no`。
-- **加机型**：`config/base.config` 加 `CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_xxx=y`，再把 `_build.yml` 顶部 `DEVICES` 加上 `xxx`（打包按名字找文件，两处必须一致）。
+- **加机型**：`config/base.config` 的机型段是「全集」也不能少写（方便看），但真正生效的是调用方 matrix 里的 `devices`；
+  新机型还要加进 `_build.yml` 的 `devices` 默认值。打包脚本按机型名认领文件，`redmi_ax5` 与 `redmi_ax5-jdcloud` 这种前缀关系已按「长名先认领」处理。
 - **改无线参数**：只动 `config/wifi.config`。
 - **换内核/分支**：改 `source_branch`；分支里没这三个机型时，`verify-config.sh` 会直接报错并列出可用机型。
 
