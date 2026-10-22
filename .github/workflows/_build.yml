@@ -36,6 +36,16 @@ on:
         required: false
         type: string
         default: 'no'
+      devices:
+        description: '本次编哪些机型（空格分隔，来自调用方的 matrix）'
+        required: false
+        type: string
+        default: 'redmi_ax5 zn_m2 redmi_ax5-jdcloud link_nn6000-v2'
+      tag:
+        description: '机型类标签（matrix 的 name，用来区分产物名和 Release tag）'
+        required: false
+        type: string
+        default: 'all'
       publish_release:
         required: false
         type: string
@@ -46,8 +56,8 @@ permissions:
 
 env:
   SOURCE_DIR: openwrt
-  # 三个机型一次编译（共享同一套工具链，比分开跑快得多）
-  DEVICES: "redmi_ax5 zn_m2 link_nn6000-v2"
+  # 编哪些机型由调用方的 matrix 决定（默认全编；eMMC 那批会带 Docker）
+  DEVICES: ${{ inputs.devices }}
   # 固件产物目录（相对源码根目录）
   BIN_DIR: bin/targets/qualcommax/ipq60xx
 
@@ -57,13 +67,14 @@ defaults:
 
 jobs:
   build:
-    name: ipq60xx / ${{ inputs.variant }} / NSS
+    name: ipq60xx / ${{ inputs.variant }} / ${{ inputs.tag }}
     runs-on: ubuntu-24.04
     # 加了 sing-box(Go) + HomeProxy + DiskMan 之后编译时间明显变长，
     # GitHub 单个 job 上限是 360 分钟，这里顶格
     timeout-minutes: 360
     env:
       VARIANT: ${{ inputs.variant }}
+      TAG: ${{ inputs.tag }}
       ENABLE_THIRD_PARTY: ${{ inputs.enable_thirdparty }}
       STRICT_THIRD_PARTY: ${{ inputs.strict_thirdparty }}
       ENABLE_DOCKER: ${{ inputs.enable_docker }}
@@ -197,7 +208,8 @@ jobs:
             .config \
             "$ENABLE_THIRD_PARTY" \
             "${{ inputs.extra_packages }}" \
-            "$ENABLE_DOCKER"
+            "$ENABLE_DOCKER" \
+            "$DEVICES"
 
           # OpenWrt 会把 .config 当 makefile include，先自己验一遍：
           # 真有问题时这里就能指名道姓，而不是等 prepare-tmpinfo 报个空变量名
@@ -275,7 +287,7 @@ jobs:
                       luci-app-nlbwmon"
           extra_pkgs=""
           if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
-            extra_pkgs="luci-app-store luci-lib-taskd taskd luci-app-diskman luci-app-partexp \
+            extra_pkgs="luci-app-store luci-lib-taskd luci-lib-xterm taskd luci-app-diskman luci-app-partexp \
                         luci-app-homeproxy sing-box luci-app-autoreboot \
                         luci-app-ddnsto ddnsto luci-app-wechatpush \
                         luci-theme-aurora luci-app-aurora-config gecoosac luci-app-gecoosac"
@@ -377,7 +389,7 @@ jobs:
       - name: 上传工作流产物
         uses: actions/upload-artifact@v4
         with:
-          name: ipq6000-${{ inputs.variant }}-${{ github.run_number }}
+          name: ipq6000-${{ inputs.variant }}-${{ inputs.tag }}-${{ github.run_number }}
           path: dist/${{ inputs.variant }}/*
           if-no-files-found: error
           retention-days: 30
@@ -388,7 +400,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="ipq6000-$VARIANT-$(date -u +%Y%m%d-%H%M)"
+          tag="ipq6000-$VARIANT-$TAG-$(date -u +%Y%m%d-%H%M)"
           short_sha="$(git -C "$SOURCE_DIR" rev-parse --short HEAD)"
           if [ "$VARIANT" = "wifi" ]; then
             variant_name="WiFi 版（ath11k + NSS 无线卸载）"
@@ -401,7 +413,8 @@ jobs:
 
           - 源码：${{ inputs.source_repo }}
           - 分支：${{ inputs.source_branch }}（$short_sha）
-          - 机型：红米 AX5 / 兆能 ZN-M2 / Link NN6000 v2（均 1G 内存）
+          - 机型类：$TAG —— $DEVICES
+          - Docker：$ENABLE_DOCKER（只有 eMMC 机型类默认开）
           - 插件：miniupnpd(UPnP)、iStore、微信推送、DDNSTO、集客软AC（第三方开关：$ENABLE_THIRD_PARTY）
           - 编译时间（UTC）：$(date -u '+%Y-%m-%d %H:%M')
 
