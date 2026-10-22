@@ -2,8 +2,8 @@
 # @id: prepare-config.sh
 # 合并「公共配置 + 变体配置」生成 .config
 #
-# 用法: prepare-config.sh <base.config> <variant.config> <输出.config> [enable_thirdparty] [extra_packages]
-# 例:   prepare-config.sh ../config/base.config ../config/nowifi.config .config yes "luci-app-wol"
+# 用法: prepare-config.sh <base.config> <variant.config> <输出.config> [enable_thirdparty] [extra_packages] [enable_docker] [devices]
+# 例:   prepare-config.sh ../config/base.config ../config/nowifi.config .config yes "" no "redmi_ax5 zn_m2"
 #
 # 为什么不能直接 cat：
 #   OpenWrt 的 toplevel.mk 在 prepare-tmpinfo 阶段会把 .config 当 makefile include 进来，
@@ -28,6 +28,7 @@ OUT="${3:?缺少输出文件}"
 ENABLE_THIRD_PARTY="${4:-yes}"
 EXTRA_PACKAGES="${5:-}"
 ENABLE_DOCKER="${6:-no}"
+DEVICES="${7:-}"
 
 if [ ! -f "$BASE" ]; then
   echo "::error::找不到公共配置 $BASE"
@@ -73,6 +74,17 @@ SUSPICIOUS="$(grep -nvE '^([[:space:]]*#|[[:space:]]*$|CONFIG_[A-Za-z0-9_.-]+=.*
 if [ -n "$SUSPICIOUS" ]; then
   echo "::warning::config 里有非标准行（已丢弃，下面是前几条）："
   echo "$SUSPICIOUS"
+fi
+
+# 5b) 机型：以工作流传入的 DEVICES 为准
+#     为什么要重写：matrix 按机型类拆分后，每个 job 只该编自己那批。
+#     如果照抄 base.config 里的「全集」，每个 job 都会把 4 个机型全编一遍，白烧一倍时间。
+if [ -n "${DEVICES:-}" ]; then
+  sed -i '/^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_/d' "$OUT"
+  for d in $DEVICES; do
+    echo "CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${d}=y" >> "$OUT"
+  done
+  echo "机型（按 DEVICES 重写）: $DEVICES"
 fi
 
 for pkg in $EXTRA_PACKAGES; do
