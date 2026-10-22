@@ -223,9 +223,13 @@ iStore 的包在 feed 里的位置和别的不一样（官方仓库是 `luci/luc
 - 如果页面里看不到分区，通常是 `parted` 没装上（`opkg list-installed | grep parted`），
   说明这个包没编进去——看 `verify-config.sh` 的 `[缺失] luci-app-partexp` 那一行。
 
-## 15. Docker（dockerman，默认关闭）
+## 15. Docker（dockerman，只有 eMMC 机型类默认开）
 
-**默认 `enable_docker=no`**，也就是镜像里**没有** Docker。原因是体积：
+机型按存储分两类：`nand`（AX5 / ZN-M2）**不带** Docker；`emmc`（AX5 JDC / NN6000 v2）**默认带**。
+开关来自调用方 matrix 的 `docker` 字段（传给 `_build.yml` 的 `enable_docker`），
+手动触发时也可以用 `device_class` 只编 `nand` 或 `emmc` 一类。
+
+体积账（解压后）：
 
 | 组件 | 解压后 |
 | --- | --- |
