@@ -1,10 +1,7 @@
 name: Build IPQ6000 WiFi
 
 # 带无线版本：ath11k + wpad + NSS 无线卸载（满血）
-#
-# 机型按「存储类型」分两类并行编译（真正干活的是 .github/workflows/_build.yml）：
-#   nand : redmi_ax5 / zn_m2            128MB flash，不带 Docker
-#   emmc : redmi_ax5-jdcloud / link_nn6000-v2   eMMC，默认带 Docker
+# 真正干活的是 .github/workflows/_build.yml
 
 on:
   workflow_dispatch:
@@ -36,12 +33,12 @@ on:
         default: 'yes'
         type: choice
         options: ['yes', 'no']
-      device_class:
-        description: '编哪一类机型（nand=AX5/ZN-M2，emmc=AX5 JDC/NN6000 v2，all=两类都编）'
+      enable_docker:
+        description: '内置 Docker（dockerd+containerd+runc+CLI 约 60MB，128MB flash 机型放不下）'
         required: false
-        default: 'all'
+        default: 'no'
         type: choice
-        options: ['all', 'nand', 'emmc']
+        options: ['no', 'yes']
       publish_release:
         description: '构建成功后发布 Release'
         required: false
@@ -57,44 +54,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # 先生成机型矩阵：把「哪一类机型用哪个 Docker 开关」集中在这一个地方
-  matrix:
-    name: 计算机型矩阵
-    runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
-    steps:
-      - id: gen
-        env:
-          CLASS: ${{ inputs.device_class || 'all' }}
-        run: |
-          set -euo pipefail
-          nand='{"name":"nand","devices":"redmi_ax5 zn_m2","docker":"no"}'
-          emmc='{"name":"emmc","devices":"redmi_ax5-jdcloud link_nn6000-v2","docker":"yes"}'
-          case "$CLASS" in
-            nand) inc="$nand" ;;
-            emmc) inc="$emmc" ;;
-            *)    inc="$nand,$emmc" ;;
-          esac
-          printf '{"include":[%s]}\n' "$inc" > /tmp/m.json
-          echo "机型矩阵：$(cat /tmp/m.json)"
-          { echo "matrix=$(cat /tmp/m.json)"; } >> "$GITHUB_OUTPUT"
-
   build:
-    needs: matrix
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     uses: ./.github/workflows/_build.yml
     secrets: inherit
     with:
       variant: wifi
-      tag: ${{ matrix.name }}
-      devices: ${{ matrix.devices }}
-      enable_docker: ${{ matrix.docker }}
       source_repo: ${{ inputs.source_repo || 'https://github.com/LiBwrt/LibWrt.git' }}
       source_branch: ${{ inputs.source_branch || '25.12-nss' }}
       extra_packages: ${{ inputs.extra_packages || '' }}
       enable_thirdparty: ${{ inputs.enable_thirdparty || 'yes' }}
       strict_thirdparty: ${{ inputs.strict_thirdparty || 'yes' }}
+      enable_docker: ${{ inputs.enable_docker || 'no' }}
       publish_release: ${{ inputs.publish_release || 'yes' }}
