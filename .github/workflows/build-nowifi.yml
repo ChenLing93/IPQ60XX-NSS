@@ -1,8 +1,16 @@
 name: Build IPQ6000 NOWIFI
 
 # 无无线版本：镜像里不含 ath11k / wpad / hostapd，开机不可能起无线
-# 适合当纯有线路由 / 旁路由 AC 用；第三方插件照样带
-# 真正干活的是 .github/workflows/_build.yml
+#
+# 机型按「存储类型」分两类并行编译（真正干活的是 .github/workflows/_build.yml）：
+#   nand : redmi_ax5 / zn_m2            128MB flash，不带 Docker
+#   emmc : redmi_ax5-jdcloud / link_nn6000-v2   eMMC，默认带 Docker
+#
+# 为什么用 matrix 而不是在一个 job 里编全部：
+#   1) Docker 只该进 eMMC 机型，而 .config 里的 CONFIG_PACKAGE_docker=y 是全局的；
+#      想按机型区分只能靠 CONFIG_TARGET_DEVICE_PACKAGES_*，它又要求
+#      TARGET_PER_DEVICE_ROOTFS=y，那和 NOWIFI「在 .config 里关掉 ath11k」冲突。
+#   2) 4 个机型 + sing-box(Go) 一个 job 很容易顶到 6 小时上限，拆开更稳。
 
 on:
   workflow_dispatch:
@@ -34,12 +42,12 @@ on:
         default: 'yes'
         type: choice
         options: ['yes', 'no']
-      enable_docker:
-        description: '内置 Docker（dockerd+containerd+runc+CLI 约 60MB，128MB flash 机型放不下）'
+      device_class:
+        description: '编哪一类机型（nand=AX5/ZN-M2，emmc=AX5 JDC/NN6000 v2，all=两类都编）'
         required: false
-        default: 'no'
+        default: 'all'
         type: choice
-        options: ['no', 'yes']
+        options: ['all', 'nand', 'emmc']
       publish_release:
         description: '构建成功后发布 Release'
         required: false
@@ -58,15 +66,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 先生成机型矩阵：把「哪一类机型用哪个 Docker 开关」集中在这一个地方
+  matrix:
+    name: 计算机型矩阵
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        env:
+          CLASS: ${{ inputs.device_class || 'all' }}
+        run: |
+          set -euo pipefail
+          nand='{"name":"nand","devices":"redmi_ax5 zn_m2","docker":"no"}'
+          emmc='{"name":"emmc","devices":"redmi_ax5-jdcloud link_nn6000-v2","docker":"yes"}'
+          case "$CLASS" in
+            nand) inc="$nand" ;;
+            emmc) inc="$emmc" ;;
+            *)    inc="$nand,$emmc" ;;
+          esac
+          printf '{"include":[%s]}\n' "$inc" > /tmp/m.json
+          echo "机型矩阵：$(cat /tmp/m.json)"
+          { echo "matrix=$(cat /tmp/m.json)"; } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     uses: ./.github/workflows/_build.yml
     secrets: inherit
     with:
       variant: nowifi
+      tag: ${{ matrix.name }}
+      devices: ${{ matrix.devices }}
+      enable_docker: ${{ matrix.docker }}
       source_repo: ${{ inputs.source_repo || 'https://github.com/LiBwrt/LibWrt.git' }}
       source_branch: ${{ inputs.source_branch || '25.12-nss' }}
       extra_packages: ${{ inputs.extra_packages || '' }}
       enable_thirdparty: ${{ inputs.enable_thirdparty || 'yes' }}
       strict_thirdparty: ${{ inputs.strict_thirdparty || 'yes' }}
-      enable_docker: ${{ inputs.enable_docker || 'no' }}
       publish_release: ${{ inputs.publish_release || 'yes' }}
