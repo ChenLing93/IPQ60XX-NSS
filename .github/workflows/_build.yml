@@ -289,11 +289,56 @@ jobs:
       - name: 开始编译（约 2~3 小时）
         working-directory: openwrt
         run: |
-          set -euo pipefail
-          if ! make -j"$(nproc)"; then
-            echo "::warning::并行编译失败，改用单线程重跑以输出完整错误日志"
-            make -j1 V=s
+          set -uo pipefail
+          # 日志放 workspace 里，失败时才能作为 artifact 上传（/tmp 不在 workspace 内不可靠）
+          LOG_DIR="$GITHUB_WORKSPACE/build-logs"
+          mkdir -p "$LOG_DIR"
+          # 两条日志都留：并行那份可能断在半截，单线程那份才是完整错误
+          if make -j"$(nproc)" > "$LOG_DIR/build.log" 2>&1; then
+            echo "编译成功，日志尾部："
+            tail -15 "$LOG_DIR/build.log"
+            exit 0
           fi
+
+          echo "::warning::并行编译失败，改用单线程重跑以输出完整错误日志"
+          make -j1 V=s > "$LOG_DIR/build1.log" 2>&1
+          rc=$?
+
+          echo "===== 单线程重跑日志最后 80 行 ====="
+          tail -80 "$LOG_DIR/build1.log" || true
+
+          # 把关键行单独抓出来：dockerd 这类包用的是自造错误格式（ERROR: ...）
+          key="$(grep -m8 -E '(^|[^a-zA-Z])ERROR:|error:|\*\*\* \[|No rule to make target' "$LOG_DIR/build1.log" 2>/dev/null || true)"
+
+          {
+            echo "## 编译失败（$VARIANT / ${{ matrix.class }}）"
+            echo ""
+            echo "### 关键错误行"
+            echo '```'
+            if [ -n "$key" ]; then echo "$key"; else echo "(没匹配到标准错误格式，看下面的尾巴)"; fi
+            echo '```'
+            echo ""
+            echo "### 最后 150 行"
+            echo '```'
+            tail -150 "$LOG_DIR/build1.log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$key" ]; then
+            echo "::error::编译失败（详见 Summary）：$(echo "$key" | head -1)"
+          else
+            echo "::error::编译失败（详见 Summary，或下载 build-log 产物）"
+          fi
+          exit "$rc"
+
+      - name: 失败时上传编译日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ inputs.variant }}-${{ matrix.class }}-${{ github.run_number }}
+          path: build-logs/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: 收集固件并校验最终镜像
         run: |
