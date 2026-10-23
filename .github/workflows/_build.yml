@@ -289,26 +289,33 @@ jobs:
       - name: 开始编译（约 2~3 小时）
         working-directory: openwrt
         run: |
+          # 关键：GitHub 的 run: 默认是 `bash -e -o pipefail`，-e 会让 make 一失败
+          # 整个脚本立刻退出 —— 上一版就是因为这个，后面的「抓错误行」全成了死代码，
+          # 日志里只剩一句 exit code 2。所以这里第一件事是关掉 -e。
           set -uo pipefail
-          # 日志放 workspace 里，失败时才能作为 artifact 上传（/tmp 不在 workspace 内不可靠）
+          set +e
           LOG_DIR="$GITHUB_WORKSPACE/build-logs"
           mkdir -p "$LOG_DIR"
-          # 两条日志都留：并行那份可能断在半截，单线程那份才是完整错误
-          if make -j"$(nproc)" > "$LOG_DIR/build.log" 2>&1; then
-            echo "编译成功，日志尾部："
-            tail -15 "$LOG_DIR/build.log"
+
+          # 用 tee 而不是 > ：既留文件给 artifact，又让 job 日志本身能看到全部输出
+          make -j"$(nproc)" 2>&1 | tee "$LOG_DIR/build.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -eq 0 ]; then
+            echo "编译成功（rc=0）"
             exit 0
           fi
 
-          echo "::warning::并行编译失败，改用单线程重跑以输出完整错误日志"
-          make -j1 V=s > "$LOG_DIR/build1.log" 2>&1
-          rc=$?
+          echo "::warning::并行编译失败（rc=$rc），改用单线程重跑以输出完整错误日志"
+          make -j1 V=s 2>&1 | tee "$LOG_DIR/build1.log"
+          rc=${PIPESTATUS[0]}
 
           echo "===== 单线程重跑日志最后 80 行 ====="
-          tail -80 "$LOG_DIR/build1.log" || true
+          tail -80 "$LOG_DIR/build1.log" 2>/dev/null || true
 
-          # 把关键行单独抓出来：dockerd 这类包用的是自造错误格式（ERROR: ...）
-          key="$(grep -m8 -E '(^|[^a-zA-Z])ERROR:|error:|\*\*\* \[|No rule to make target' "$LOG_DIR/build1.log" 2>/dev/null || true)"
+          # 关键行：dockerd 这类包用的是自造错误格式（ERROR: ...），
+          # Go 出错是 `error:`，make 是 `*** [xxx]`，kmod 缺失是 `No rule to make target`
+          key="$(grep -m8 -E '(^|[^a-zA-Z])ERROR:|error:|\*\*\* \[|No rule to make target|undefined reference|fatal error' \
+                 "$LOG_DIR/build1.log" 2>/dev/null || true)"
 
           {
             echo "## 编译失败（$VARIANT / ${{ matrix.class }}）"
@@ -320,7 +327,7 @@ jobs:
             echo ""
             echo "### 最后 150 行"
             echo '```'
-            tail -150 "$LOG_DIR/build1.log" || true
+            tail -150 "$LOG_DIR/build1.log" 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
