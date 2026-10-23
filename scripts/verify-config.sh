@@ -16,7 +16,8 @@ VARIANT="${1:?用法: verify-config.sh <wifi|nowifi> [enable_thirdparty] [strict
 ENABLE_THIRD_PARTY="${2:-yes}"
 STRICT_THIRD_PARTY="${3:-yes}"
 ENABLE_DOCKER="${4:-no}"
-DEVICES="${DEVICES:-redmi_ax5 zn_m2 link_nn6000-v2}"
+DEVICE_CLASS="${5:-all}"
+DEVICES="${DEVICES:-redmi_ax5 redmi_ax5-jdcloud zn_m2 link_nn6000-v2}"
 
 CONFIG_FILE=".config"
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -158,6 +159,19 @@ for p in luci-app-nlbwmon ; do
     missing="$missing $p"
   fi
 done
+
+# eMMC 机型必须有 mmc-utils，否则 emmc-health 读不到寿命
+if [ "$DEVICE_CLASS" = "emmc" ]; then
+  echo "========== eMMC（寿命检测）=========="
+  if has mmc-utils; then
+    echo "  [OK] mmc-utils（/sbin/mmc，供 emmc-health 读 EXT_CSD）"
+  else
+    echo "  [缺失] mmc-utils —— eMMC 机型没有它就没法检测寿命"
+    missing="$missing mmc-utils"
+  fi
+else
+  echo "========== eMMC：已跳过（device_class=$DEVICE_CLASS）=========="
+fi
 
 if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
   echo "========== 第三方插件 =========="
