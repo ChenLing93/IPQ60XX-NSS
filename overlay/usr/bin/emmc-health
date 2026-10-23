@@ -1,0 +1,98 @@
+#!/bin/sh
+# eMMC 健康与寿命检测
+#
+# 用法:
+#   emmc-health             打印 Pre-EOL、寿命估计 A/B、累计写入量、overlay 占用
+#   emmc-health --warn      只在异常时输出（给 cron 用），异常时退出码 1
+#   emmc-health /dev/mmcblk1  指定设备
+#
+# 原理: mmc extcsd read 读 EXT_CSD 里的 JEDEC 字段
+#   EXT_CSD_PRE_EOL_INFO                0x01 正常 / 0x02 预警(达到 80%) / 0x03 紧急(耗尽)
+#   EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A  0x01=已用 0~10% ... 0x0A=90~100%, 0x0B=已超额定寿命
+set -u
+
+DEV="/dev/mmcblk0"
+WARN_MODE=0
+for a in "$@"; do
+  case "$a" in
+    --warn)   WARN_MODE=1 ;;
+    /dev/*)   DEV="$a" ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+  esac
+done
+
+say() { [ "$WARN_MODE" = 1 ] || echo "$@"; }
+
+[ -e "$DEV" ] || { say "找不到 $DEV（不是 eMMC 机型？）"; exit 2; }
+if ! command -v mmc >/dev/null 2>&1; then
+  say "缺少 mmc 命令：opkg install mmc-utils"
+  exit 2
+fi
+
+EXT="$(mmc extcsd read "$DEV" 2>/dev/null)" || { say "mmc extcsd read $DEV 失败"; exit 2; }
+
+gethex() {
+  printf '%s\n' "$EXT" | awk -v k="$1" 'index($0, k) { print $NF; exit }'
+}
+
+PRE="$(gethex EXT_CSD_PRE_EOL_INFO)"
+LTA="$(gethex EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A)"
+LTB="$(gethex EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B)"
+[ -n "$PRE" ] || PRE="0x00"
+[ -n "$LTA" ] || LTA="0x00"
+[ -n "$LTB" ] || LTB="0x00"
+
+eol_str() {
+  case "$(($1))" in
+    1) echo "Normal（正常）" ;;
+    2) echo "Warning（已用掉 80%，该准备换了）" ;;
+    3) echo "Urgent（寿命耗尽，随时可能写坏）" ;;
+    *) echo "未知（$1）" ;;
+  esac
+}
+
+life_str() {
+  case "$(($1))" in
+    0|1) echo "0% ~ 10%" ;;
+    2) echo "10% ~ 20%" ;;
+    3) echo "20% ~ 30%" ;;
+    4) echo "30% ~ 40%" ;;
+    5) echo "40% ~ 50%" ;;
+    6) echo "50% ~ 60%" ;;
+    7) echo "60% ~ 70%" ;;
+    8) echo "70% ~ 80%" ;;
+    9) echo "80% ~ 90%" ;;
+    10) echo "90% ~ 100%" ;;
+    11) echo "超过额定寿命" ;;
+    *) echo "未定义（$1）" ;;
+  esac
+}
+
+WR_SECT="$(awk '{print $7}' /sys/block/$(basename "$DEV")/stat 2>/dev/null || echo 0)"
+[ -n "$WR_SECT" ] || WR_SECT=0
+
+PRE_N="$(($PRE))"
+LTA_N="$(($LTA))"
+LTB_N="$(($LTB))"
+
+say "设备        : $DEV"
+say "Pre-EOL     : $(eol_str "$PRE")   [$PRE]"
+say "寿命估计 A  : 已用 $(life_str "$LTA")   [$LTA]"
+say "寿命估计 B  : 已用 $(life_str "$LTB")   [$LTB]"
+say "累计写入    : $(awk -v s="$WR_SECT" 'BEGIN{printf "%.2f GiB", s*512/1024/1024/1024}')（自开机以来）"
+say "overlay 占用: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}')"
+
+# ---- 判定 ----
+bad=0
+[ "$PRE_N" -ge 2 ] && bad=1
+[ "$LTA_N" -ge 10 ] && bad=1
+[ "$LTB_N" -ge 10 ] && bad=1
+
+if [ "$bad" -eq 1 ]; then
+  echo "!! eMMC 健康告警：Pre-EOL=$(eol_str "$PRE") 寿命A=$(life_str "$LTA") 寿命B=$(life_str "$LTB")"
+  echo "   建议：把 Docker 数据目录（/opt/docker）挪到 U 盘/SSD，减少写入；尽快备份配置。"
+  exit 1
+fi
+
+say "结论        : 健康"
+exit 0
