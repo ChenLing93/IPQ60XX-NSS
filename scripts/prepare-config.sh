@@ -29,6 +29,7 @@ ENABLE_THIRD_PARTY="${4:-yes}"
 EXTRA_PACKAGES="${5:-}"
 ENABLE_DOCKER="${6:-no}"
 DEVICES="${7:-}"
+DEVICE_CLASS="${8:-all}"
 
 if [ ! -f "$BASE" ]; then
   echo "::error::找不到公共配置 $BASE"
@@ -61,6 +62,13 @@ fi
 if [ "$ENABLE_DOCKER" != "yes" ]; then
   sed -i '/# >>> DOCKER-BEGIN/,/# <<< DOCKER-END/d' "$RAW"
   echo "已剔除 Docker 配置段（enable_docker=$ENABLE_DOCKER）"
+fi
+
+# 3c) 非 eMMC 机型删掉 eMMC 专用段（mmc-utils / 寿命检测）
+#     nand 机型上 /dev/mmcblk0 根本不存在，装了 mmc 也没用，白占空间
+if [ "$DEVICE_CLASS" != "emmc" ]; then
+  sed -i '/# >>> EMMC-BEGIN/,/# <<< EMMC-END/d' "$RAW"
+  echo "已剔除 eMMC 配置段（device_class=$DEVICE_CLASS）"
 fi
 
 # 4) 只保留 kconfig 认的行
@@ -105,6 +113,7 @@ echo "已生成 $OUT"
 echo "  变体: $(basename "$VARIANT_CONF")"
 echo "  第三方插件: $ENABLE_THIRD_PARTY"
 echo "  Docker: $ENABLE_DOCKER"
+echo "  机型类: $DEVICE_CLASS（eMMC 段: $(if [ "$DEVICE_CLASS" = "emmc" ]; then echo 保留; else echo 剔除; fi)）"
 echo "  额外包: ${EXTRA_PACKAGES:-（无）}"
 echo "  有效行数: $LINES"
 echo "  前三行:"
