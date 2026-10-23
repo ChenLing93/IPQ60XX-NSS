@@ -34,11 +34,17 @@ on:
         type: choice
         options: ['yes', 'no']
       enable_docker:
-        description: '内置 Docker（dockerd+containerd+runc+CLI 约 60MB，128MB flash 机型放不下）'
+        description: 'Docker：auto=按机型类（emmc 带 / nand 不带），yes/no=强制'
         required: false
-        default: 'no'
+        default: 'auto'
         type: choice
-        options: ['no', 'yes']
+        options: ['auto', 'no', 'yes']
+      device_class:
+        description: '机型类：all=nand+emmc 并行两个 job，nand=AX5/ZN-M2，emmc=AX5 JDC/NN6000 v2'
+        required: false
+        default: 'all'
+        type: choice
+        options: ['all', 'nand', 'emmc']
       publish_release:
         description: '构建成功后发布 Release'
         required: false
@@ -64,5 +70,6 @@ jobs:
       extra_packages: ${{ inputs.extra_packages || '' }}
       enable_thirdparty: ${{ inputs.enable_thirdparty || 'yes' }}
       strict_thirdparty: ${{ inputs.strict_thirdparty || 'yes' }}
-      enable_docker: ${{ inputs.enable_docker || 'no' }}
+      enable_docker: ${{ inputs.enable_docker || 'auto' }}
+      device_class: ${{ inputs.device_class || 'all' }}
       publish_release: ${{ inputs.publish_release || 'yes' }}
