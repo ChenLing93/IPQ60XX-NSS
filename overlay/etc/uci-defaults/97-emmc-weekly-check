@@ -1,0 +1,25 @@
+#!/bin/sh
+# 首次启动：给 eMMC 机型加一条每周健康自检（只在有 /dev/mmcblk0 的机器上生效）
+#
+# 为什么用 cron 而不是开机跑一次：
+#   - 开机跑一次没用（寿命是长期变化的）
+#   - 每周一次足够，且异常时 emmc-health --warn 会往 syslog 写一条，
+#     LuCI「状态 → 系统日志」里能看到
+# 注意：这条 cron 是写进 /etc/crontabs/root 的，之后如果在 LuCI「计划任务」里
+#       保存过一次，可能会被覆盖 —— 那样的话把这一行重加一次即可。
+
+[ -e /dev/mmcblk0 ] || exit 0
+[ -x /usr/bin/emmc-health ] || exit 0
+
+mkdir -p /etc/crontabs
+touch /etc/crontabs/root
+
+if grep -q 'emmc-health' /etc/crontabs/root 2>/dev/null; then
+  exit 0
+fi
+
+echo '30 4 * * 6 /usr/bin/emmc-health --warn | logger -t emmc-health' >> /etc/crontabs/root
+/etc/init.d/cron restart 2>/dev/null || true
+
+logger -t emmc-health "已加入每周健康自检：每周六 04:30（emmc-health --warn）"
+exit 0
