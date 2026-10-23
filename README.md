@@ -1,4 +1,4 @@
-# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版
+# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版  完全修改时间：2026年10月23日15:23:52
 
 红米 AX5、红米 AX5 JDC（`redmi_ax5-jdcloud`）、兆能 ZN-M2、Link NN6000 v2（都是 IPQ6000）的 GitHub Actions 编译工程。
 一次编译产出**两套可选固件**：
@@ -10,14 +10,17 @@
 
 机型又按**存储类型**分两类并行编译（`device_class` 可选 `all` / `nand` / `emmc`）：
 
-| 类 | 机型 | 存储 | Docker |
-| --- | --- | --- | --- |
-| `nand` | `redmi_ax5`、`zn_m2` | 128MB NAND | **不带**（放不下） |
-| `emmc` | `redmi_ax5-jdcloud`、`link_nn6000-v2` | eMMC | **默认带** |
+| 类 | 机型 | 存储 | Docker | eMMC 寿命检测 |
+| --- | --- | --- | --- | --- |
+| `nand` | `redmi_ax5`、`zn_m2` | 128MB NAND | **不带**（放不下） | 无（NAND 没这套寄存器） |
+| `emmc` | `redmi_ax5-jdcloud`、`link_nn6000-v2` | eMMC | **默认带** | **有**：`emmc-health` + 每周自检 |
 
 > 为什么拆两类而不是一个 job 编全部：Docker 的 `CONFIG_PACKAGE_docker=y` 是全局的，
 > 想只给 eMMC 机型加，只能用 `CONFIG_TARGET_DEVICE_PACKAGES_*` + `TARGET_PER_DEVICE_ROOTFS=y`，
 > 而那会跟 NOWIFI「在 `.config` 里关掉 ath11k」的做法打架。拆 job 还顺带避开了 6 小时上限。
+>
+> `emmc` 类还会带上 `mmc-utils`、`/usr/bin/emmc-health` 和一条每周自检 cron，
+> 直接读 eMMC 的 EXT_CSD（Pre-EOL / 寿命估计 A·B），用法见 `docs/PLUGINS.md` 第 18 节。
 
 两版共用同一个可复用工作流，差异只在 `config/wifi.config` 和 `config/nowifi.config`，不会出现「改了 A 忘了改 B」。
 
@@ -73,9 +76,14 @@
    | `source_branch` | `25.12-nss` | NSS 分支（换内核改这里） |
    | `extra_packages` | 空 | 再追加包，如 `luci-app-wol` |
    | `enable_thirdparty` | yes | iStore/微信推送/DDNSTO/集客AC；某插件编不过就选 no |
+   | `strict_thirdparty` | yes | 第三方插件缺失时直接失败（配置阶段就停，不白烧 2~3 小时） |
+   | `device_class` | all | `all`=nand+emmc 两个 job 并行；`nand`=AX5/ZN-M2；`emmc`=AX5 JDC/NN6000 v2 |
+   | `enable_docker` | auto | `auto`=emmc 带、nand 不带；`yes`/`no` 强制 |
    | `publish_release` | yes | 编完自动建 Release |
 
-4. 约 **2～3 小时**。产物在 **Actions → Artifacts**（`ipq6000-wifi-N` / `ipq6000-nowifi-N`）或 **Releases**（tag 形如 `ipq6000-nowifi-20261018-1200`）。
+4. 约 **2～3 小时**（`device_class=all` 时两个 job 并行，不会翻倍）。
+   产物在 **Actions → Artifacts**（`ipq6000-wifi-nand-N` / `ipq6000-wifi-emmc-N` 这种，带机型类）
+   或 **Releases**（tag 形如 `ipq6000-nowifi-emmc-20261022-1200`）。
 
 NOWIFI 版每周六 02:00（北京时间）自动编一次；WiFi 版只在手动触发时编，免得每周白烧一次 Actions 额度。
 
@@ -132,8 +140,9 @@ libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 
 - **加包**：运行时填 `extra_packages`，或写进 `config/base.config`（`CONFIG_PACKAGE_xxx=y`）。
 - **只去掉某个第三方插件**：删 `base.config` 里对应两三行；全去掉就把 `enable_thirdparty` 设为 `no`。
-- **加机型**：`config/base.config` 的机型段是「全集」也不能少写（方便看），但真正生效的是调用方 matrix 里的 `devices`；
-  新机型还要加进 `_build.yml` 的 `devices` 默认值。打包脚本按机型名认领文件，`redmi_ax5` 与 `redmi_ax5-jdcloud` 这种前缀关系已按「长名先认领」处理。
+- **加机型**：`config/base.config` 的机型段是「全集」也不能少写（方便看），但真正生效的是 `_build.yml`
+  里 `plan` job 的 matrix（`nand` / `emmc` 两个字符串里的 `devices`）；新机型要同时加进对应那一条。
+  打包脚本按机型名认领文件，`redmi_ax5` 与 `redmi_ax5-jdcloud` 这种前缀关系已按「长名先认领」处理。
 - **改无线参数**：只动 `config/wifi.config`。
 - **换内核/分支**：改 `source_branch`；分支里没这三个机型时，`verify-config.sh` 会直接报错并列出可用机型。
 
