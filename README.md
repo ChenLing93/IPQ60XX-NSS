@@ -1,4 +1,4 @@
-# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版  完全修改时间：2026年10月23日15:23:52
+# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版  完全修改时间：2026年10月23日21:10:09
 
 红米 AX5、红米 AX5 JDC（`redmi_ax5-jdcloud`）、兆能 ZN-M2、Link NN6000 v2（都是 IPQ6000）的 GitHub Actions 编译工程。
 一次编译产出**两套可选固件**：
