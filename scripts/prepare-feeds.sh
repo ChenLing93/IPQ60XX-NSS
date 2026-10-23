@@ -377,6 +377,6 @@ if ! grep -qx 'config PACKAGE_luci-app-store' tmp/.config-package.in 2>/dev/null
   if [ -n "$store_dir" ]; then
     { make -r DUMP=1 FEED=istore TOPDIR="$PWD" -C "$store_dir" 2>&1 | tail -30 | sed 's/^/       /' ; } || true
   fi
-  echo "::warning::iStore 未入库，固件会照常编译但不含 iStore（上面是原因）"
+  echo "::warning::iStore 这次扫描没入库（以「生成并校验配置」那步的 verify 结果为准：defconfig 会重扫一次，很多情况下那时就进去了）"
 fi
 echo "  第三方包处理完成"
