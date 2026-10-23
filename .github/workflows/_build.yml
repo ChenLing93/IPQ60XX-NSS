@@ -32,10 +32,15 @@ on:
         type: string
         default: 'yes'
       enable_docker:
-        description: '是否内置 Docker（dockerd+containerd+runc+CLI 约 60MB，128MB flash 的机型放不下）'
+        description: 'Docker：auto=按机型类（emmc 带 / nand 不带），yes=强制带，no=强制不带'
         required: false
         type: string
-        default: 'no'
+        default: 'auto'
+      device_class:
+        description: '机型类：all=nand+emmc 两个 job 并行，nand=AX5/ZN-M2，emmc=AX5 JDC/NN6000 v2'
+        required: false
+        type: string
+        default: 'all'
       publish_release:
         required: false
         type: string
@@ -46,8 +51,7 @@ permissions:
 
 env:
   SOURCE_DIR: openwrt
-  # 三个机型一次编译（共享同一套工具链，比分开跑快得多）
-  DEVICES: "redmi_ax5 zn_m2 link_nn6000-v2"
+  # 机型不再写死在这里：由 plan 依据 device_class 算成 matrix，每个 job 只编自己那批
   # 固件产物目录（相对源码根目录）
   BIN_DIR: bin/targets/qualcommax/ipq60xx
 
@@ -56,17 +60,51 @@ defaults:
     shell: bash
 
 jobs:
+  # 先算矩阵：一次编译只编一个类，两类各跑一个 job（互不阻塞，也避开 6 小时上限）
+  plan:
+    name: 规划机型矩阵
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: 计算 matrix
+        id: plan
+        run: |
+          set -euo pipefail
+          cls="${{ inputs.device_class }}"
+          # nand：128MB flash，docker 放不下 → 不带
+          # emmc：eMMC，空间够 → 默认带 docker
+          nand='{"class":"nand","devices":"redmi_ax5 zn_m2","docker":"no"}'
+          emmc='{"class":"emmc","devices":"redmi_ax5-jdcloud link_nn6000-v2","docker":"yes"}'
+          case "$cls" in
+            all)  m="{\"include\":[$nand,$emmc]}" ;;
+            nand) m="{\"include\":[$nand]}" ;;
+            emmc) m="{\"include\":[$emmc]}" ;;
+            *) echo "::error::device_class 只能是 all / nand / emmc，收到 '$cls'"; exit 1 ;;
+          esac
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+          echo "机型矩阵: $m"
+
   build:
-    name: ipq60xx / ${{ inputs.variant }} / NSS
+    name: ${{ inputs.variant }} / ${{ matrix.class }} / NSS
+    needs: plan
     runs-on: ubuntu-24.04
     # 加了 sing-box(Go) + HomeProxy + DiskMan 之后编译时间明显变长，
     # GitHub 单个 job 上限是 360 分钟，这里顶格
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       VARIANT: ${{ inputs.variant }}
+      DEVICES: ${{ matrix.devices }}
       ENABLE_THIRD_PARTY: ${{ inputs.enable_thirdparty }}
       STRICT_THIRD_PARTY: ${{ inputs.strict_thirdparty }}
-      ENABLE_DOCKER: ${{ inputs.enable_docker }}
+      # auto 时按机型类决定（nand 不带、emmc 带），显式 yes/no 时以用户为准
+      ENABLE_DOCKER: ${{ inputs.enable_docker == 'auto' && matrix.docker || inputs.enable_docker }}
+      # 镜像体积提醒阈值（collect-firmware.sh 读这个变量）：
+      # nand 机 128MB flash，超过 70MB 基本刷不进去；emmc 机带 docker，200MB 以内都正常
+      IMAGE_WARN_MB: ${{ matrix.class == 'nand' && '70' || '200' }}
 
     steps:
       - name: 检出工作流仓库
@@ -177,9 +215,12 @@ jobs:
           cp -a overlay/. "$SOURCE_DIR/package/base-files/files/"
           test -f "$SOURCE_DIR/package/base-files/files/etc/uci-defaults/99-custom-lan-ip"
           # overlay 里的脚本要可执行（git 里存的通常是 644）
-          if [ -f "$SOURCE_DIR/package/base-files/files/usr/bin/udp-top" ]; then
-            chmod 0755 "$SOURCE_DIR/package/base-files/files/usr/bin/udp-top"
-          fi
+          for d in usr/bin etc/uci-defaults; do
+            if [ -d "$SOURCE_DIR/package/base-files/files/$d" ]; then
+              chmod 0755 "$SOURCE_DIR/package/base-files/files/$d"/* 2>/dev/null || true
+            fi
+          done
+          # eMMC 机型才应该带 emmc-health，nand 机型上它只是躺在那儿占几 KB，无害
           echo "已注入："
           find "$SOURCE_DIR/package/base-files/files" -type f -printf '  %p\n'
 
@@ -201,7 +242,9 @@ jobs:
             .config \
             "$ENABLE_THIRD_PARTY" \
             "${{ inputs.extra_packages }}" \
-            "$ENABLE_DOCKER"
+            "$ENABLE_DOCKER" \
+            "$DEVICES" \
+            "${{ matrix.class }}"
 
           # OpenWrt 会把 .config 当 makefile include，先自己验一遍：
           # 真有问题时这里就能指名道姓，而不是等 prepare-tmpinfo 报个空变量名
@@ -215,7 +258,7 @@ jobs:
           echo "  预检通过"
 
           make defconfig
-          bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY" "$STRICT_THIRD_PARTY" "$ENABLE_DOCKER"
+          bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY" "$STRICT_THIRD_PARTY" "$ENABLE_DOCKER" "${{ matrix.class }}"
 
           # 额外包（运行时输入 extra_packages）单独再确认一遍：
           # kconfig 对不存在的符号是静默丢弃的，不查就等于没加。
@@ -381,7 +424,7 @@ jobs:
       - name: 上传工作流产物
         uses: actions/upload-artifact@v4
         with:
-          name: ipq6000-${{ inputs.variant }}-${{ github.run_number }}
+          name: ipq6000-${{ inputs.variant }}-${{ matrix.class }}-${{ github.run_number }}
           path: dist/${{ inputs.variant }}/*
           if-no-files-found: error
           retention-days: 30
@@ -392,7 +435,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="ipq6000-$VARIANT-$(date -u +%Y%m%d-%H%M)"
+          tag="ipq6000-$VARIANT-${{ matrix.class }}-$(date -u +%Y%m%d-%H%M)"
           short_sha="$(git -C "$SOURCE_DIR" rev-parse --short HEAD)"
           if [ "$VARIANT" = "wifi" ]; then
             variant_name="WiFi 版（ath11k + NSS 无线卸载）"
