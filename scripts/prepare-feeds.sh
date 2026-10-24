@@ -257,6 +257,29 @@ clone_pkg "https://github.com/ChenLing93/luci-theme-aurora.git" \
           "package/luci-theme-aurora" "Aurora 主题"
 clone_pkg "https://github.com/eamonxg/luci-app-aurora-config.git" \
           "package/luci-app-aurora-config" "Aurora 设置插件"
+# ----- 修正「字母开头的版本号」-----
+# 25.12 用的是 apk，apk 的版本号语法不允许以字母开头：
+#   PKG_VERSION:=v0.3.4  →  --info "version:v0.3.4-r1"
+#   ERROR: info field 'version' has invalid value: package version is invalid
+# luci-lib-docker 就是这种写法（它的上游一直这么写，opkg 能忍、apk 不行）。
+#
+# 只处理「没有 PKG_SOURCE」的包（luci 库/主题这类纯脚本包），因为这类包的
+# PKG_SOURCE_URL 通常不会拿 PKG_VERSION 拼下载地址；有 PKG_SOURCE 的包跳过，
+# 避免把版本号改了导致下载 404。
+echo "===== 修正字母开头的 PKG_VERSION（apk 不接受）====="
+fixed=0
+for mk in package/feeds/*/*/Makefile package/*/*/Makefile package/*/*/*/Makefile; do
+  [ -f "$mk" ] || continue
+  grep -q '^PKG_VERSION:=v' "$mk" 2>/dev/null || continue
+  grep -q '^PKG_SOURCE' "$mk" 2>/dev/null && continue
+  real="$(readlink -f "$mk" 2>/dev/null || echo "$mk")"
+  sed -i 's/^PKG_VERSION:=v/PKG_VERSION:=/' "$real"
+  echo "  [fix] ${real#"$PWD"/}：PKG_VERSION 去掉前导 v"
+  fixed=$((fixed + 1))
+done
+if [ "$fixed" -eq 0 ]; then
+  echo "  没有需要修正的包"
+fi
 # ----- 补 build 签名（放在所有包都到位之后）-----
 # scan.mk 是这么发现包的：
 #   find -L package -name Makefile | xargs grep -E 'call (BuildPackage|KernelPackage|...)'
