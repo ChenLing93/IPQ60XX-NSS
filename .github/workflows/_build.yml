@@ -312,14 +312,12 @@ jobs:
           echo "===== 单线程重跑日志最后 80 行 ====="
           tail -80 "$LOG_DIR/build1.log" 2>/dev/null || true
 
-          # 关键行：dockerd 这类包用的是自造错误格式（ERROR: ...），
-          # Go 出错是 `error:`，make 是 `*** [xxx]`，kmod 缺失是 `ERROR: module ... is missing`
-          # 注意：V=s 会把整段安装脚本也回显出来，所以要优先匹配「真正的那句」
-          key="$(grep -m3 -E "ERROR: module .* is missing|ERROR: dockerd Expected|ERROR: Expected 'PKG_GIT_SHORT_COMMIT|No rule to make target|undefined reference|fatal error:" \
-                 "$LOG_DIR/build1.log" 2>/dev/null || true)"
+          # 关键行：优先匹配「真正有意义」的错误，再过滤掉 V=s 回显的命令行
+          # （回显里常带 echo "ERROR: module ... is missing."，会把真错误挤掉）
+          key="$(grep -E "ERROR: info field|ERROR: failed to create package|ERROR: module .* is missing|ERROR: dockerd Expected|ERROR: Expected 'PKG_GIT_SHORT_COMMIT|failed to build|No rule to make target|undefined reference|fatal error:" \
+                 "$LOG_DIR/build1.log" 2>/dev/null | grep -v 'echo "' | head -3 || true)"
           if [ -z "$key" ]; then
-            key="$(grep -m3 -E '(^|[^a-zA-Z])ERROR:|error:|\*\*\* \[' \
-                   "$LOG_DIR/build1.log" 2>/dev/null || true)"
+            key="$(grep -E 'ERROR:|error:|\*\*\* \[' "$LOG_DIR/build1.log" 2>/dev/null | grep -v 'echo "' | head -3 || true)"
           fi
           # 把一堆 /home/runner/work/... 前缀砍掉，annotation 里才看得清
           key="$(printf '%s\n' "$key" | sed "s#${GITHUB_WORKSPACE:-/nonexistent}/##g")"
