@@ -173,6 +173,16 @@ else
   echo "========== eMMC：已跳过（device_class=$DEVICE_CLASS）=========="
 fi
 
+# 已知坑（2026-10）：LibWrt 25.12 的 6.12.108 内核里 kmod-md-mod 打包会失败
+#   ERROR: module 'drivers/md/md-mod.ko' is missing.
+# 它只会被 DiskMan 的 mdadm/RAID 选项拖进来。这里只是提醒，不拦编译
+# （真被选中了就说明有人又把 INCLUDE_mdadm 打开了）。
+if has kmod-md-mod; then
+  echo "========== 已知风险 =========="
+  echo "  [!] 选中了 kmod-md-mod —— 上游 6.12 内核可能报 module ... is missing，"
+  echo "      建议关掉 DiskMan 的 INCLUDE_mdadm / INCLUDE_kmod_md_*（见 PLUGINS.md 第 9 节）"
+fi
+
 if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
   echo "========== 第三方插件 =========="
   for p in luci-app-store luci-lib-taskd luci-lib-xterm taskd \
