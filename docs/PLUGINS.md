@@ -151,10 +151,17 @@ mount /dev/sda1 /mnt        # 手动挂；想自动挂就在 LuCI「系统→挂
 **位置**：LuCI → 系统 → 磁盘管理
 
 - 分成「磁盘」「分区」「挂载点」三块，能分区、格式化（ext4/fat32/exfat/ntfs3/btrfs）、
-  挂载、看 SMART、组软 RAID（mdadm 已带上）。
+  挂载、看 SMART。**软 RAID（mdadm）默认关闭**，原因在下面。
 - 格式化前**确认盘符**：`/dev/sda` 是整盘，`/dev/sda1` 是分区，选错等于格掉整块盘。
 - 本固件的根分区是 squashfs + overlay，DiskMan 里显示为一堆只读分区是正常的，不要动 `rootfs_data`。
 - SMART 只对 SATA/USB 桥支持良好的硬盘盒有效，很多廉价硬盘盒不转发 SMART 命令。
+
+> **为什么关了 RAID**：DiskMan 的 mdadm 选项会把 `kmod-md-mod` / `kmod-md-raid456` /
+> `kmod-md-linear` 拖进来，而 LibWrt 25.12 当前内核（6.12.108）里 `kmod-md-mod` 打包会失败：
+> 它要装 `drivers/md/md-mod.ko`，但内核既没生成这个 `.ko`、`modules.builtin` 里也没有，
+> 于是 `ERROR: module 'drivers/md/md-mod.ko' is missing.` 直接把整个编译打断。
+> 这台机器没有双盘位，RAID 本来也用不上。真要开，得在
+> `target/linux/qualcommax/config-6.12` 里补上 `CONFIG_BLK_DEV_MD=m`（属于改上游，不建议）。
 
 ---
 
@@ -248,5 +255,67 @@ NN6000 v2 带 eMMC 才比较从容。所以做成独立开关，要就给 `enabl
 - 编译时间：dockerd/containerd/runc/docker 是四个 Go 项目，首次编译大概多 30~40 分钟，
   而且 dockerd 的 `Build/Prepare` 会去 GitHub 校验 commit，**网络不稳会直接编译失败**（重跑即可）。
 - 真要在 IPQ6000 上跑容器，建议只用 `/opt` 挂 U 盘 + 两三个轻量镜像，别指望当 NAS 主机。
+
+---
+
+## 18. eMMC 寿命检测（只有 eMMC 机型有）
+
+eMMC 机型的镜像里带了 `mmc-utils` 和一个小工具 `emmc-health`，nand 机型没有（`device_class=nand`
+时 `base.config` 的 EMMC 段会被整段剔除，因为 `/dev/mmcblk0` 根本不存在）。
+
+### 用法
+
+```sh
+emmc-health            # 看当前状态
+emmc-health --warn     # 只在异常时输出，给 cron 用
+```
+
+输出示例：
+
+```
+设备        : /dev/mmcblk0
+Pre-EOL     : Normal（正常）   [0x01]
+寿命估计 A  : 已用 0% ~ 10%   [0x01]
+寿命估计 B  : 已用 0% ~ 10%   [0x01]
+累计写入    : 3.42 GiB（自开机以来）
+overlay 占用: 1.1G/14G (8%)
+结论        : 健康
+```
+
+### 这几个字段是什么
+
+| 字段 | 含义 | 什么时候该慌 |
+| --- | --- | --- |
+| `Pre-EOL` | 厂商预设的寿命阈值状态 | `0x02` 预警（已达 80%）、`0x03` 紧急（耗尽） |
+| `寿命估计 A/B` | JEDEC 定义的已用寿命区间，A/B 是两个存储块各自的口径 | 到 `0x0A`（90~100%）该换机，`0x0B` 已超额定 |
+| 累计写入 | `/sys/block/mmcblk0/stat` 的写扇区数，**每次重启归零** | 只用来估日常写入量，不是终身累计 |
+
+底层就是 `mmc extcsd read /dev/mmcblk0`，直接从 eMMC 的 EXT_CSD 寄存器读，**不需要拆机、不需要 SMART**。
+
+### 自动检查
+
+首次启动会写一条 cron（`/etc/uci-defaults/97-emmc-weekly-check`）：
+
+```
+30 4 * * 6 /usr/bin/emmc-health --warn | logger -t emmc-health
+```
+
+每周六 04:30 跑一次，只有在 `Pre-EOL ≥ warning` 或寿命 ≥ 90% 时才往 syslog 写一条，
+LuCI → 状态 → 系统日志里搜 `emmc-health` 就能看到。**正常时不产生任何输出和日志**。
+
+> 注意：这条 cron 写在 `/etc/crontabs/root` 里。如果你之后在 LuCI「计划任务」里保存过一次，
+> 它可能被覆盖 —— 那样的话把上面这行重加一次即可。
+
+### 和 Docker 的关系
+
+Docker 在 eMMC 机型上是默认开的（`enable_docker=auto`），而容器的写放大是 eMMC 寿命的最大敌人：
+
+- `/opt/docker` 默认就在 eMMC 上，镜像层、容器日志都会持续写入；
+- 有条件的话把 `/opt` 挂到 U 盘/SSD（LuCI → 挂载点），eMMC 只放系统；
+- 至少给 dockerd 的日志加个上限，别让它无限长（`/etc/docker/daemon.json` 里
+  `"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"2"}`）。
+
+顺带一句：`nand` 机型的 flash 是 NAND，没有这套寄存器，也就没有寿命检测——128MB 的机器
+本来也不适合跑 Docker，所以 `device_class=nand` 时 Docker 默认是关的。
 
 
