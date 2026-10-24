@@ -313,9 +313,16 @@ jobs:
           tail -80 "$LOG_DIR/build1.log" 2>/dev/null || true
 
           # 关键行：dockerd 这类包用的是自造错误格式（ERROR: ...），
-          # Go 出错是 `error:`，make 是 `*** [xxx]`，kmod 缺失是 `No rule to make target`
-          key="$(grep -m8 -E '(^|[^a-zA-Z])ERROR:|error:|\*\*\* \[|No rule to make target|undefined reference|fatal error' \
+          # Go 出错是 `error:`，make 是 `*** [xxx]`，kmod 缺失是 `ERROR: module ... is missing`
+          # 注意：V=s 会把整段安装脚本也回显出来，所以要优先匹配「真正的那句」
+          key="$(grep -m3 -E "ERROR: module .* is missing|ERROR: dockerd Expected|ERROR: Expected 'PKG_GIT_SHORT_COMMIT|No rule to make target|undefined reference|fatal error:" \
                  "$LOG_DIR/build1.log" 2>/dev/null || true)"
+          if [ -z "$key" ]; then
+            key="$(grep -m3 -E '(^|[^a-zA-Z])ERROR:|error:|\*\*\* \[' \
+                   "$LOG_DIR/build1.log" 2>/dev/null || true)"
+          fi
+          # 把一堆 /home/runner/work/... 前缀砍掉，annotation 里才看得清
+          key="$(printf '%s\n' "$key" | sed "s#${GITHUB_WORKSPACE:-/nonexistent}/##g")"
 
           {
             echo "## 编译失败（$VARIANT / ${{ matrix.class }}）"
