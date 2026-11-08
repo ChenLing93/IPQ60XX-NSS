@@ -1,4 +1,4 @@
-# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版  完全修改时间：2026年10月23日21:10:09
+# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼控制编译版 时间：2026年11月8日
 
 红米 AX5、红米 AX5 JDC（`redmi_ax5-jdcloud`）、兆能 ZN-M2、Link NN6000 v2（都是 IPQ6000）的 GitHub Actions 编译工程。
 一次编译产出**两套可选固件**：
@@ -24,8 +24,10 @@
 
 两版共用同一个可复用工作流，差异只在 `config/wifi.config` 和 `config/nowifi.config`，不会出现「改了 A 忘了改 B」。
 
-两版都带：**满血 NSS（NSS 11.4）+ miniupnpd(UPnP) + iStore + 微信推送 + DDNSTO + 集客软 AC**。
-各插件怎么用见 [docs/PLUGINS.md](docs/PLUGINS.md)。
+两版都带：**满血 NSS（NSS 11.4）+ miniupnpd(UPnP) + iStore + 微信推送 + DDNSTO + 集客软 AC
++ CoreMark 跑分（`/bin/coremark`，单核 -O3，每天 04:00 定时跑并记历史）**，
+以及按内存分档的 **conntrack 调优**（防抖音/红果刷爆表）。
+各插件怎么用见 [docs/PLUGINS.md](docs/PLUGINS.md)：跑分看第 19 节，conntrack 看第 20 节。
 
 ---
 
@@ -55,8 +57,14 @@
 │   ├── prepare-config.sh   # 合并 base + 变体 → .config
 │   ├── verify-config.sh    # defconfig 后校验：机型 / 包 / 变体一致性
 │   └── collect-firmware.sh # 编译后按机型打包
+├── overlay/                # 并进 base-files 的 rootfs 文件（工作流自动注入）
+│   ├── etc/uci-defaults/   # 首次启动执行：默认 IP、启用 conntrack 调优
+│   ├── etc/init.d/         # conntrack-tune（S15，先于 firewall）
+│   ├── etc/config/         # conntrack 的 UCI 默认值
+│   ├── etc/modprobe.d/     # nf_conntrack 哈希桶（尽力而为）
+│   └── usr/bin/            # emmc-health（eMMC 机型寿命检测）
 ├── docs/
-│   └── PLUGINS.md          # 五个插件的配置与限制
+│   └── PLUGINS.md          # 插件配置与限制（含第 20 节 conntrack/QUIC）
 └── README.md
 ```
 
@@ -159,6 +167,9 @@ libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 | iStore 页面空白 | 确认 `luci-compat`/`luci-lua-runtime` 在 manifest 里，或浏览器强刷 |
 | 集客 AC 起不来 | 架构不对（必须 arm64）或 flash 放不下 |
 | 微信推送没流量数据 | `wrtbwmon` 与 NSS/Flow Offloading 冲突，已知限制 |
+| 刷抖音/红果一会儿全网卡几秒，过会儿自己好 | conntrack 表被 QUIC 顶满。先 `/etc/init.d/conntrack-tune status` 看水位；不够就 `uci set conntrack.settings.max=...` 调高一档，或对电视单独打开 QUIC 封禁（PLUGINS.md 第 20 节） |
+| 开了 QUIC 封禁后游戏偶尔丢包 1~2 秒 | 客户端重试把 CPU 顶上去了。把游戏机移出 `conntrack.quic.mac` 列表，或直接关掉封禁只留调优 |
+| 想看跑分 / 成绩怎么突然掉了 | `coremark-bench --last 20` 看历史，`/etc/init.d/coremark-bench status` 看定时任务；掉 20% 以上会自动写 syslog（`logread \| grep coremark-bench`），多半是散热降频或后台有活 |
 | 编译 6 小时被杀 | 减少机型 / 关第三方插件 |
 | 发 Release 403 | Workflow permissions 没给 Read and write |
 
