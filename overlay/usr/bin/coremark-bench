@@ -1,0 +1,94 @@
+#!/bin/sh
+# coremark-bench —— 跑一次 CoreMark，把成绩记进历史
+#
+# 用法：
+#   coremark-bench            跑一次，打印成绩并追加历史
+#   coremark-bench --quiet    静默（给 cron 用），只写 syslog
+#   coremark-bench --last [N] 看最近 N 次成绩（默认 10）
+#
+# 定时由 /etc/init.d/coremark-bench 按 /etc/config/coremark-bench 的 schedule 写入 crontab。
+# 历史文件 /root/coremark-history.txt：一行一次，制表符分隔「时间 分数 编译器」。
+set -u
+
+HIST="/root/coremark-history.txt"
+KEEP=60
+QUIET=0
+LAST=0
+
+usage() { sed -n '2,9p' "$0"; }
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--quiet|-q) QUIET=1; shift ;;
+		--last|-l)
+			LAST=10
+			shift
+			if [ $# -gt 0 ]; then
+				case "$1" in
+					''|*[!0-9]*) ;;
+					*) LAST=$1; shift ;;
+				esac
+			fi
+			;;
+		-h|--help) usage; exit 0 ;;
+		*) echo "未知参数：$1" >&2; exit 2 ;;
+	esac
+done
+
+# ---------- 只看历史 ----------
+if [ "$LAST" -gt 0 ]; then
+	if [ ! -f "$HIST" ]; then
+		echo "还没有历史记录（$HIST 不存在）。先手动跑一次：coremark-bench"
+		exit 0
+	fi
+	echo "时间                 分数        编译器"
+	tail -n "$LAST" "$HIST" | awk -F'\t' '{ printf "%-19s %-10s %s\n", $1, $2, $3 }'
+	exit 0
+fi
+
+# ---------- 找二进制 ----------
+BIN=""
+for b in /bin/coremark /usr/bin/coremark /usr/sbin/coremark; do
+	if [ -x "$b" ]; then
+		BIN="$b"
+		break
+	fi
+done
+if [ -z "$BIN" ]; then
+	echo "找不到 coremark：CONFIG_PACKAGE_coremark 没选中？" >&2
+	exit 2
+fi
+
+# ---------- 跑 ----------
+# 300 秒兜底：正常几秒到几十秒，卡住说明有别的东西在抢 CPU
+out="$(timeout 300 "$BIN" 2>&1)"
+line="$(printf '%s\n' "$out" | grep -m1 -E '^CoreMark 1\.0')"
+if [ -z "$line" ]; then
+	echo "coremark 没输出成绩行，原始输出的最后 5 行：" >&2
+	printf '%s\n' "$out" | tail -5 >&2
+	exit 3
+fi
+
+score="$(printf '%s\n' "$line" | awk '{print $4}')"
+compiler="$(printf '%s\n' "$line" | awk -F' / ' '{print $2}' | cut -c1-40)"
+
+# 上一次的成绩（追加之前先取）
+prev=""
+[ -f "$HIST" ] && prev="$(awk -F'\t' '{a=$2} END{print a}' "$HIST")"
+
+# ---------- 记 ----------
+printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$score" "$compiler" >> "$HIST"
+tail -n "$KEEP" "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+
+# 掉 20% 以上提醒一句：多半是散热降频或者后台有活
+if [ -n "$prev" ] && awk -v a="$score" -v b="$prev" 'BEGIN { exit !(a < b * 0.8) }'; then
+	logger -t coremark-bench "成绩比上次低 20% 以上：$prev -> $score（散热降频？后台负载？）"
+fi
+
+if [ "$QUIET" = "1" ]; then
+	logger -t coremark-bench "score=$score compiler=$compiler"
+else
+	printf 'CoreMark  %s  (%s)\n' "$score" "$compiler"
+	printf '已记录到 %s（现有 %s 条）\n' "$HIST" "$(wc -l < "$HIST")"
+fi
+exit 0
