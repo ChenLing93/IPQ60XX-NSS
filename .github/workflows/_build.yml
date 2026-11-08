@@ -205,7 +205,7 @@ jobs:
           echo "提交     : $(git log -1 --format='%h %ad %s' --date=short)"
           echo "内核版本 : $(grep -m1 'KERNEL_PATCHVER' target/linux/qualcommax/Makefile | tr -d ' ' || echo '未找到')"
 
-      - name: 注入自定义 rootfs 文件（默认 IP 等）
+      - name: 注入自定义 rootfs 文件（默认 IP / conntrack / 跑分）
         run: |
           set -euo pipefail
           # overlay/ 会并进 base-files，随基础包进镜像。
@@ -214,8 +214,10 @@ jobs:
           mkdir -p "$SOURCE_DIR/package/base-files/files"
           cp -a overlay/. "$SOURCE_DIR/package/base-files/files/"
           test -f "$SOURCE_DIR/package/base-files/files/etc/uci-defaults/99-custom-lan-ip"
+          test -f "$SOURCE_DIR/package/base-files/files/etc/init.d/conntrack-tune"
+          test -f "$SOURCE_DIR/package/base-files/files/usr/bin/coremark-bench"
           # overlay 里的脚本要可执行（git 里存的通常是 644）
-          for d in usr/bin etc/uci-defaults; do
+          for d in usr/bin etc/uci-defaults etc/init.d; do
             if [ -d "$SOURCE_DIR/package/base-files/files/$d" ]; then
               chmod 0755 "$SOURCE_DIR/package/base-files/files/$d"/* 2>/dev/null || true
             fi
@@ -365,6 +367,23 @@ jobs:
           else
             echo "::warning::rootfs 里没找到 99-custom-lan-ip，刷完可能还是 192.168.1.1"
           fi
+
+          # conntrack 调优 / CoreMark 定时跑分同样是 overlay 注入的，逐个确认
+          # （少一个就等于没生效：脚本缺了跑不起来，config 缺了起不来）
+          for f in \
+              etc/init.d/conntrack-tune \
+              etc/uci-defaults/98-conntrack-tune \
+              etc/config/conntrack \
+              usr/bin/coremark-bench \
+              etc/init.d/coremark-bench \
+              etc/uci-defaults/97-coremark-bench \
+              etc/config/coremark-bench ; do
+            if find "$SOURCE_DIR"/build_dir/target-*/root-*/"$f" 2>/dev/null | grep -q .; then
+              echo "  [OK] $f 已进 rootfs"
+            else
+              echo "::warning::rootfs 里没找到 $f —— 对应的功能不会生效"
+            fi
+          done
 
           manifests=( "$SOURCE_DIR/$BIN_DIR"/*.manifest )
           if [ ! -f "${manifests[0]}" ]; then
