@@ -58,24 +58,27 @@ for dev in $devices_sorted; do
 done
 
 # ---- 尺寸提醒 ----
-# AX5 / ZN-M2 只有 128MB flash，而这几个机型的定义里没有 IMAGE_SIZE，
-# 所以镜像超了 buildroot 不会报错，是刷机的时候才写不进去（甚至刷一半失败）。
-# 集客 AC 16MB + sing-box 二三十 MB + 主题，很容易顶到这里，先给个显眼提示。
-LIMIT_MB="${IMAGE_WARN_MB:-80}"
+# 这几个机型的设备定义里没有 IMAGE_SIZE，镜像超了 buildroot 不会报错，
+# 是刷机的时候才写不进去（甚至刷一半失败）。
+# 128MB flash 的 nand 机型（AX5 / ZN-M2）用 60MB 当警戒线：超了不一定刷不进，
+# 但 overlay 会很小；实测镜像一般 30~50MB，离上限还远。
+LIMIT_MB="${IMAGE_WARN_MB:-60}"
 big=""
+echo "镜像尺寸："
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   mb=$(( $(stat -c%s "$f") / 1048576 ))
+  echo "  $(basename "$f") = ${mb}MB"
   if [ "$mb" -ge "$LIMIT_MB" ]; then
     big="$big $(basename "$f")=${mb}MB"
   fi
 done < <(find "$BIN_DIR" -maxdepth 1 -type f \
-         \( -name '*sysupgrade.bin' -o -name '*factory.bin' \) | sort)
+         \( -name '*sysupgrade.bin' -o -name '*factory.bin' -o -name '*.itb' -o -name '*.ubi' \) | sort)
 
 if [ -n "$big" ]; then
-  echo "::warning::以下镜像超过 ${LIMIT_MB}MB，128MB flash 的机型（AX5 / ZN-M2）可能刷不进去：$big"
+  echo "::warning::以下镜像超过 ${LIMIT_MB}MB，128MB flash 的机型（AX5 / ZN-M2）overlay 会很小：$big"
 else
-  echo "镜像尺寸均在 ${LIMIT_MB}MB 以内（sysupgrade / factory）"
+  echo "镜像尺寸均在 ${LIMIT_MB}MB 以内（sysupgrade / factory / itb / ubi）"
 fi
 
 # manifest / profiles 等元数据直接带上，方便核对内核与 NSS 包
