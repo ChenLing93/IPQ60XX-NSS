@@ -55,7 +55,9 @@ sed -i -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' "$RAW"
 # 3) 关掉第三方插件时，先按注释标记删掉整段（必须在过滤注释之前做）
 if [ "$ENABLE_THIRD_PARTY" != "yes" ]; then
   sed -i '/# >>> THIRD-PARTY-BEGIN/,/# <<< THIRD-PARTY-END/d' "$RAW"
-  echo "已剔除第三方插件配置段"
+  # 测速插件也是从第三方仓库 clone 的，第三方整体关掉时一并剔除，否则会选一个不存在的包
+  sed -i '/# >>> NETSPEEDTEST-BEGIN/,/# <<< NETSPEEDTEST-END/d' "$RAW"
+  echo "已剔除第三方插件配置段（含测速）"
 fi
 
 # 3b) 关掉 Docker 时删掉 Docker 段（独立开关：第三方插件开着、但不想塞 60MB 的 docker）
@@ -70,6 +72,10 @@ if [ "$DEVICE_CLASS" != "emmc" ]; then
   sed -i '/# >>> EMMC-BEGIN/,/# <<< EMMC-END/d' "$RAW"
   echo "已剔除 eMMC 配置段（device_class=$DEVICE_CLASS）"
 fi
+
+# 3d) 测速插件（NETSPEEDTEST 段）不再按机型类剔除：
+#     实测这几个机型的镜像离 128MB flash 还远（一般 30~50MB），15~20MB 的
+#     python3 + 两个二进制放得下。要关掉就删 base.config 里那一段，或 enable_thirdparty=no。
 
 # 4) 只保留 kconfig 认的行
 #    注意键名里会有连字符（kmod-qca-nss-drv、luci-app-store、miniupnpd-nftables），
