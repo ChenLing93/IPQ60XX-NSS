@@ -503,5 +503,63 @@ dmesg | grep -i "table full"
 跑一天之后看 `nf_conntrack_count` 的**峰值**：如果离 max 还有一半以上的余量，说明调够了；
 如果天天贴着 max，要么继续往上调一档，要么打开 QUIC 封禁（只对电视）。
 
+---
+
+## 21. 测速（luci-app-netspeedtest）
+
+作者 sirpdboy，仓库 [sirpdboy/netspeedtest](https://github.com/sirpdboy/netspeedtest)。
+一个页面把内网和外网测速都包了，省得 SSH 里敲 iperf3。
+
+### 装的是哪三块
+
+| 包 | 作用 |
+| --- | --- |
+| `luci-app-netspeedtest` | LuCI 页面：**网络 → NetSpeedtest** |
+| `homebox` | 内网测速服务端（预编译二进制，浏览器打开就有图形界面） |
+| `ookla-speedtest` | 外网测速 CLI（Speedtest.net 官方客户端） |
+
+页面下五个子页：`Iperf3`、`Homebox`、`Wan SpeedTest`、`Online SpeedTest`、`Log`。
+
+依赖会顺带把 `iperf3`、`jq`、`python3-light` 和几个 python3 模块拉进来——
+**这一套 15~20MB**，所有机型都带。
+
+> 一开始我把它限定在 eMMC 机型，是怕 128MB flash 的 nand 机型塞不下；
+> 实测这几个机型的镜像是 **30~50MB**（`sysupgrade` / `factory` / `.itb` 都不到 128MB），
+> 加完这一套还有富余，所以现在默认全机型都编进去。
+> `collect-firmware.sh` 会打印每个镜像的实际大小，超过 60MB 打 warning。
+
+### 怎么用
+
+**内网（Iperf3 页）**：路由器当服务端，页面里点「启动」，然后电脑/手机跑客户端：
+
+```sh
+iperf3 -c 192.168.10.254 -t 30 -P 4        # 上行
+iperf3 -c 192.168.10.254 -t 30 -P 4 -R     # 下行
+```
+
+**内网（Homebox 页）**：在页面上打开服务（默认端口 3300），然后用**手机浏览器**访问
+`http://192.168.10.254:3300`，点「开始」就测——另一头不用装任何东西。家里没人会敲命令时用这个。
+
+**外网（Wan / Online 页）**：直接选服务器跑 Ookla，出的是对运营商的上下行。
+
+### 三个坑
+
+1. **两个二进制是构建时下载的**。`homebox` 从 sirpdboy/homebox 的 release 拉，`ookla-speedtest`
+   从 `install.speedtest.net` 拉，Makefile 里写死了 `PKG_HASH`。上游换包 → 哈希对不上 → **整个 job 直接失败**。
+   真遇到了就把 `NETSPEEDTEST` 段注释掉重编，或者临时设 `enable_thirdparty=no` 先出个固件。
+2. **测的是路由器自身，不是转发**。iperf3/homebox 的流量由路由器本机产生/接收，走的是 CPU 协议栈，
+   NSS 快传不参与。想看 NAT 转发能力，得让流量**穿过**它（两台终端一左一右）。
+3. **`netspeedtest.sh` 是 bash 脚本**，而 OpenWrt 默认只有 ash。WAN 测速那部分如果报
+   `not found` / 语法错，装个 `bash` 即可：`apk add bash`。内网 iperf3/homebox 不依赖它。
+
+### 怎么关
+
+删掉 `config/base.config` 里 `# >>> NETSPEEDTEST-BEGIN` 到 `# <<< NETSPEEDTEST-END` 那三行；
+或者编译时把 `enable_thirdparty` 设成 `no`（测速段会跟着第三方段一起剔掉）。
+只想保留 CLI 不要页面：`apk add iperf3` 就够，不需要这一套。
+- **只删页面留 CLI**：`apk add iperf3` 就够，不需要这套（见上一节的说明）。
+
+
+
 
 
