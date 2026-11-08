@@ -1,0 +1,159 @@
+#!/bin/sh /etc/rc.common
+# 连接跟踪（conntrack）调优 + 可选「按设备封 QUIC」
+#
+# 只依赖 busybox sh / uci / sysctl / nft（firewall4 自带），不引入任何新包。
+# 配置：/etc/config/conntrack        说明：docs/PLUGINS.md 第 20 节
+#
+# 为什么 START=15：要抢在 firewall（S19）之前把 nf_conntrack 加载起来，这样才能
+# 用自定义的 hashsize 建表 —— hashsize 是模块参数，加载之后只读，改不了。
+# 万一模块早被加载了，就只调 sysctl，功能不受影响。
+
+START=15
+STOP=10
+USE_PROCD=0
+
+CONF=conntrack
+TABLE=conntrack_guard
+
+EXTRA_COMMANDS="status"
+EXTRA_HELP="	status	显示当前条目数 / 上限 / QUIC 封禁状态"
+
+log() { echo "conntrack-tune: $*"; }
+uci_get() { uci -q get "$CONF.$1" 2>/dev/null; }
+is_num() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# 按内存挑表项上限：2G→262144，1G→131072，其它→65536。
+# nf_conntrack_max 不随内存自动放大，所以这里必须显式给。
+auto_max() {
+	local mem
+	mem=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+	is_num "$mem" || { echo 65536; return; }
+	if [ "$mem" -ge 1572864 ]; then
+		echo 262144
+	elif [ "$mem" -ge 786432 ]; then
+		echo 131072
+	else
+		echo 65536
+	fi
+}
+
+apply_sysctl() {
+	local en max to stream tcp buckets
+
+	en=$(uci_get settings.enabled)
+	if [ "$en" = "0" ]; then
+		log "调优已关闭（$CONF.settings.enabled=0）"
+		return 0
+	fi
+
+	max=$(uci_get settings.max)
+	if [ -z "$max" ] || [ "$max" = "auto" ] || ! is_num "$max"; then
+		max=$(auto_max)
+	fi
+	# 手填的值也要夹一下：太小没意义，太大会在表满之前先把内存吃光
+	[ "$max" -lt 1024 ] && max=1024
+	[ "$max" -gt 1048576 ] && max=1048576
+
+	to=$(uci_get settings.udp_timeout);              is_num "$to"     || to=15
+	stream=$(uci_get settings.udp_timeout_stream);   is_num "$stream" || stream=60
+	tcp=$(uci_get settings.tcp_timeout_established); is_num "$tcp"    || tcp=3600
+
+	# 模块还没加载时先建表，顺便把哈希桶给到 max/4（至少 16384），
+	# 否则 26 万条目挤在 16384 个桶里，哈希链会变长、CPU 吃亏。
+	if [ ! -e /proc/sys/net/netfilter/nf_conntrack_max ]; then
+		buckets=$((max / 4))
+		[ "$buckets" -lt 16384 ] && buckets=16384
+		modprobe nf_conntrack hashsize="$buckets" 2>/dev/null \
+			|| modprobe nf_conntrack 2>/dev/null \
+			|| true
+	fi
+
+	if sysctl -w "net.netfilter.nf_conntrack_max=$max" \
+	             "net.netfilter.nf_conntrack_udp_timeout=$to" \
+	             "net.netfilter.nf_conntrack_udp_timeout_stream=$stream" \
+	             "net.netfilter.nf_conntrack_tcp_timeout_established=$tcp" \
+	             >/dev/null 2>&1; then
+		log "已生效：max=$max udp=$to udp_stream=$stream tcp_established=$tcp"
+	else
+		log "sysctl 写入失败（内核里没有 nf_conntrack？）"
+	fi
+}
+
+nft_flush() {
+	nft delete table inet "$TABLE" 2>/dev/null || true
+}
+
+apply_quic() {
+	local en macs m setmac="" rules
+
+	en=$(uci_get quic.enabled)
+	if [ "$en" != "1" ]; then
+		nft_flush
+		return 0
+	fi
+
+	# uci 的 list 取出来是空格分隔的一串
+	macs=$(uci_get quic.mac)
+	for m in $macs; do
+		case "$m" in
+			[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+				setmac="$setmac${setmac:+, }$m" ;;
+			*) log "忽略非法 MAC：$m" ;;
+		esac
+	done
+
+	if [ -z "$setmac" ]; then
+		log "QUIC 封禁开着，但 mac 列表为空 —— 不生成规则"
+		nft_flush
+		return 0
+	fi
+
+	# 关键：hook prerouting priority raw（-300），比 conntrack（-200）早，
+	# 所以被丢的包根本不会建 conntrack 表项。放在 fw4 的 forward 链里丢，
+	# 每个包都要先建表再丢，反而把表顶得更高、CPU 更热。
+	rules="table inet $TABLE {
+	set quic_mac {
+		type ether_addr
+		elements = { $setmac }
+	}
+	chain prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		ether saddr @quic_mac udp dport 443 counter drop
+	}
+}"
+
+	nft_flush
+	if printf '%s\n' "$rules" | nft -f - 2>/dev/null; then
+		log "QUIC 已封（prerouting/raw）：$setmac"
+	else
+		log "nft 规则加载失败，本次没封 —— 不影响上面的 sysctl"
+	fi
+}
+
+start() {
+	apply_sysctl
+	apply_quic
+}
+
+stop() {
+	nft_flush
+}
+
+reload() {
+	stop
+	start
+}
+
+status() {
+	if [ -r /proc/sys/net/netfilter/nf_conntrack_count ]; then
+		printf 'conntrack: %s / %s 条\n' \
+			"$(cat /proc/sys/net/netfilter/nf_conntrack_count)" \
+			"$(cat /proc/sys/net/netfilter/nf_conntrack_max)"
+	fi
+	if nft list table inet "$TABLE" >/dev/null 2>&1; then
+		echo "QUIC 封禁: 已生效"
+		nft list table inet "$TABLE" 2>/dev/null
+	else
+		echo "QUIC 封禁: 未启用"
+	fi
+}
