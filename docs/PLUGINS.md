@@ -318,4 +318,190 @@ Docker 在 eMMC 机型上是默认开的（`enable_docker=auto`），而容器�
 顺带一句：`nand` 机型的 flash 是 NAND，没有这套寄存器，也就没有寿命检测——128MB 的机器
 本来也不适合跑 Docker，所以 `device_class=nand` 时 Docker 默认是关的。
 
+---
+
+## 19. CoreMark 跑分
+
+来自官方 packages feed 的 `utils/coremark`，装完就是 **`/bin/coremark`**（几十 KB，两个类都带）。
+
+### 用法
+
+```sh
+coremark                 # 跑一次标准测试（单核，默认 50000 次迭代）
+coremark -v              # 带详细输出
+```
+
+关心的就一行：
+
+```
+CoreMark 1.0 : 8721.35 / GCC 14.3.0 (-O3) / heap
+```
+
+这个 `8721.35` 就是 **iterations/sec**，数值越大越好。Cortex-A53 大约 **每 MHz 2.5~3.5 分**
+（受 GCC 版本和优化影响），所以 IPQ6000 @1.5GHz 单核大致落在 **4000~6000** 这个量级；
+拿到 8000 以上说明优化特别到位（LTO + O3），明显低于 3000 就要怀疑是不是没开 `-O3`
+或者测试时有别的负载在抢 CPU，可以用「分数 ÷ 1500MHz ≈ 每 MHz 得分」自己验算一下。
+
+### 我们编进去的参数
+
+| 配置 | 值 | 原因 |
+| --- | --- | --- |
+| `COREMARK_OPTIMIZE_O3` | y | 不加 `-O3` 分数会低 30% 以上，横向对比就失真了 |
+| `COREMARK_ENABLE_MULTITHREADING` | **n** | 官方榜单都是单核成绩；开多线程得到的是“总吞吐”，不能直接和别人比 |
+| `COREMARK_NUMBER_OF_THREADS` | 不用 | 关多线程时它不生效 |
+
+想要多核吞吐：把 `CONFIG_COREMARK_ENABLE_MULTITHREADING=y` 和
+`CONFIG_COREMARK_NUMBER_OF_THREADS=4` 打开重编，得到的分数约等于单核 × 4 × 效率，
+**不要**拿去和单核分数比。
+
+### 两个坑
+
+1. **别在跑满流量时测**。NSS 卸载后 CPU 空闲，但 P2P/大流量时软中断会抢 CPU，分数能掉一半。
+   测之前先 `uptime` 看负载，最好在 `0.00` 左右。
+2. **opkg 事后安装会加一条 04:00 的 cron**。这个包的 `postinst` 会往 `/etc/crontabs/root` 写
+   `0 4 * * * /etc/coremark.sh`（每天凌晨跑一次并写日志）。编进固件时因为 `IPKG_INSTROOT` 存在，
+   这段不会执行；但如果你是刷完机用 opkg/iStore 装的，记得删掉：
+   ```sh
+   sed -i '/coremark/d' /etc/crontabs/root && /etc/init.d/cron restart
+   ```
+
+### 和其他型号对比的建议
+
+同一个固件、同一版 GCC、同样 `-O3` 才有可比性。换个 `source_branch`、换个 GCC 版本，
+分数变化 10% 很正常——所以这个数字更适合“自己前后对比”（比如加了 NSS 某个补丁之后有没有变），
+而不是拿去做跨品牌跑分。
+
+### 定时跑分
+
+固件自带一个定时任务，每天 04:00 自动跑一次并把成绩记进 `/root/coremark-history.txt`。
+
+```sh
+coremark-bench                 # 手动跑一次，打印成绩并记录
+coremark-bench --last 20       # 看最近 20 次
+/etc/init.d/coremark-bench status   # 看配置 / crontab 里的定时行 / 最近 3 次
+```
+
+| 文件 | 作用 |
+| --- | --- |
+| `overlay/usr/bin/coremark-bench` | 跑分 + 解析 + 记历史（保留最近 60 条） |
+| `overlay/etc/init.d/coremark-bench` | 把带标记的一段 cron 写进 `/etc/crontabs/root` |
+| `overlay/etc/config/coremark-bench` | `enabled`、`schedule` 两个选项 |
+| `overlay/etc/uci-defaults/97-coremark-bench` | 首次启动 enable |
+
+改时间或关掉：
+
+```sh
+uci set coremark-bench.settings.schedule='30 3 * * *'   # 每天 03:30
+uci set coremark-bench.settings.enabled='0'             # 关掉，从 crontab 撤掉这一段
+uci commit coremark-bench
+/etc/init.d/coremark-bench reload
+```
+
+几个设计上的取舍：
+
+1. **只维护自己那段 cron**。`/etc/crontabs/root` 里用 `# >>> coremark-bench` / `# <<< coremark-bench`
+   包起来，其它行（你自己加的定时任务）原样保留，重复执行也不会堆叠。
+2. **历史存在 `/root`，不是 `/tmp`**。`/tmp` 重启就没，而跑分的意义恰恰是「和上周比」。
+   `/root` 在 overlay 上，sysupgrade 默认保留；一天一行，对 flash 的磨损可以忽略。
+3. **掉 20% 会自己报警**。成绩低于上次的 80% 时往 syslog 写一条，专门用来抓
+   「散热降频 / 后台有活 / 某个补丁把优化改坏了」这类问题：`logread | grep coremark-bench`。
+4. **不要在白天跑**。CoreMark 单核满跑十几秒，期间那一个核会被吃满；04:00 默认值就是为此选的，
+   和 eMMC 周检（每周六 04:30）也错开了，两者不会撞车。
+
+> 在 LuCI「计划任务」里手工保存过一次的话，会整份重写 `/etc/crontabs/root`，我们那段可能被冲掉；
+> 重启一次服务就回来了：`/etc/init.d/coremark-bench reload`。
+
+---
+
+## 20. 连接跟踪（conntrack）与 QUIC
+
+### 为什么抖音 / 红果会把表顶满
+
+这两个都是字节系，视频全走 **QUIC（UDP/443）**。UDP 没有挥手包，客户端关页面时路由器是不知道的，
+只能靠超时回收：
+
+| 机制 | 默认值 | 后果 |
+| --- | --- | --- |
+| `nf_conntrack_udp_timeout_stream` | 180 秒 | 双向有流量的 UDP 条目要躺 3 分钟 |
+| `nf_conntrack_udp_timeout` | 30 秒 | 只发不收的残留 |
+| `nf_conntrack_max` | **不随内存变化** | 2G / 1G / 256M 读到的是同一个数，常见 16384 或 65536 |
+
+外加每换一个视频分片、每换一个 CDN 节点就是一条新五元组，几台设备一起刷就能把表填满。
+**所以「内存 2G 还是爆表」不是内存不够，是上限根本没跟着内存走。**
+
+爆表之后的症状：`dmesg` 里 `nf_conntrack: table full, dropping packet`，新连接建不起来，
+表现为刷视频转圈、网页打不开，过一会儿（旧条目超时了）自己恢复。
+
+### 固件里做了什么
+
+| 文件 | 作用 |
+| --- | --- |
+| `overlay/etc/init.d/conntrack-tune` | 开机（S15，先于 firewall）套用调优参数，可选生成 QUIC 封禁规则 |
+| `overlay/etc/config/conntrack` | UCI 配置，所有开关都在这里 |
+| `overlay/etc/uci-defaults/98-conntrack-tune` | 首次启动把服务 enable 进 rc.d |
+| `overlay/etc/modprobe.d/99-nf-conntrack.conf` | 尽力把哈希桶设成 65536（模块先被加载的话这项不生效） |
+
+默认值（都可在 `/etc/config/conntrack` 里改）：
+
+| 参数 | 默认 | 2G（NN6000） | 1G（ZN-M2） | 其它（AX5） |
+| --- | --- | --- | --- | --- |
+| `nf_conntrack_max` | `auto` | 262144 | 131072 | 65536 |
+| `nf_conntrack_udp_timeout` | 15 | — | — | — |
+| `nf_conntrack_udp_timeout_stream` | 60 | — | — | — |
+| `nf_conntrack_tcp_timeout_established` | 3600 | — | — | — |
+
+`auto` 是按 `/proc/meminfo` 的 MemTotal 现场算的，不用手填。
+表项是**按需分配**的，把上限写大不会立刻吃内存（每条约 300~400 字节，顶满才占）。
+
+> `udp_timeout` 从 30 缩到 15，代价是「不常发保活包的 UDP 应用」NAT 映射会散得快一点。
+> 主机联机游戏如果出现 NAT 变严格、进不去房，把它调回 30 再试：
+> `uci set conntrack.settings.udp_timeout=30`。`udp_timeout_stream` 才是对付 QUIC 的主力，
+> 它不受这个影响。
+
+### 用法
+
+```sh
+/etc/init.d/conntrack-tune status       # 当前条目数 / 上限 / QUIC 封禁状态
+/etc/init.d/conntrack-tune restart      # 改完配置重载
+
+uci set conntrack.settings.max=131072 ; uci commit conntrack
+```
+
+### 可选：按设备封 QUIC
+
+```sh
+uci set conntrack.quic.enabled=1
+uci add_list conntrack.quic.mac='aa:bb:cc:dd:ee:ff'
+uci commit conntrack
+/etc/init.d/conntrack-tune restart
+```
+
+规则是 `table inet conntrack_guard` 里 `prerouting priority raw` 的那条，
+匹配 `ether saddr` 后丢掉 `udp dport 443`。**位置很关键**：
+
+| 放在哪 | conntrack 表项 | 代价 |
+| --- | --- | --- |
+| LuCI 自定义规则（`fw4` 的 forward 链） | **照建不误**：先建表再丢 | 表没省下来，CPU 还多了一次丢弃 + 客户端重试 |
+| 本固件的 `prerouting/raw`（-300，早于 conntrack 的 -200） | 一条都不建 | 只有一次 set 查找 |
+
+### 两个坑
+
+1. **封 QUIC 会让 CPU 忙起来**。客户端 QUIC 失败后会不停重试、并回落 TCP，包量翻倍。
+   表现是 CPU 偶尔冲到 50%，同一台路由器后面的游戏出现 1~2 秒的丢包抖动。
+   所以默认是关的，只建议对电视/旧手机开，**游戏机别进列表**。
+2. **MAC 匹配有前提**。设备必须和路由器在同一个二层（直连或桥接的 AP）。中间再过一层
+   路由器（双重 NAT）就匹配不到了，那种情况只能改成按 IP 匹配。
+
+### 验证到底有没有用
+
+```sh
+cat /proc/sys/net/netfilter/nf_conntrack_count
+cat /proc/sys/net/netfilter/nf_conntrack_max
+dmesg | grep -i "table full"
+```
+
+跑一天之后看 `nf_conntrack_count` 的**峰值**：如果离 max 还有一半以上的余量，说明调够了；
+如果天天贴着 max，要么继续往上调一档，要么打开 QUIC 封禁（只对电视）。
+
+
 
