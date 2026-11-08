@@ -1,0 +1,102 @@
+#!/bin/sh /etc/rc.common
+# CoreMark 定时跑分：把一段带标记的 cron 写进 /etc/crontabs/root
+#
+# 为什么不直接放一个 /etc/crontabs/root：那是用户的 crontab，整个覆盖会把人家
+# 手写的定时任务冲掉（sysupgrade 保留 /etc，但升级固件时 base-files 的默认文件
+# 会覆盖同一路径）。所以这里只维护自己的标记块，其它行原样保留。
+#
+# 配置：/etc/config/coremark-bench     说明：docs/PLUGINS.md 第 19 节
+
+START=98
+STOP=98
+USE_PROCD=0
+
+CONF=coremark-bench
+CRON=/etc/crontabs/root
+MARK_BEGIN='# >>> coremark-bench'
+MARK_END='# <<< coremark-bench'
+
+EXTRA_COMMANDS="status"
+EXTRA_HELP="	status	看配置、crontab 里的定时行、最近 3 次成绩"
+
+log() { echo "coremark-bench: $*"; }
+uci_get() { uci -q get "$CONF.$1" 2>/dev/null; }
+
+apply() {
+	local en sched tmp
+
+	en=$(uci_get settings.enabled)
+	[ -z "$en" ] && en=1
+
+	tmp="$(mktemp /tmp/coremark-bench.XXXXXX 2>/dev/null)" || { log "建不了临时文件"; return 1; }
+
+	# 先把自己那段剔掉（无论开还是关），保证重复执行结果一致
+	if [ -f "$CRON" ]; then
+		sed "/^$MARK_BEGIN/,/^$MARK_END/d" "$CRON" > "$tmp"
+	else
+		: > "$tmp"
+	fi
+
+	if [ "$en" != "0" ]; then
+		sched=$(uci_get settings.schedule)
+		[ -n "$sched" ] || sched='0 4 * * *'
+
+		# 只接受 5 段的普通 cron；写错了就退回默认，别把 crontab 弄坏
+		# shellcheck disable=SC2086
+		set -- $sched
+		if [ "$#" -ne 5 ]; then
+			log "schedule 不是 5 段 cron（'$sched'），改用默认 0 4 * * *"
+			sched='0 4 * * *'
+		fi
+
+		{
+			echo "$MARK_BEGIN（本段由 /etc/init.d/coremark-bench 维护，别手改）"
+			echo "$sched /usr/bin/coremark-bench --quiet"
+			echo "$MARK_END"
+		} >> "$tmp"
+	fi
+
+	if [ -f "$CRON" ] && cmp -s "$tmp" "$CRON"; then
+		rm -f "$tmp"
+		log "定时任务没有变化（enabled=$en${sched:+ schedule=$sched}）"
+		return 0
+	fi
+
+	mkdir -p /etc/crontabs
+	[ -f "$CRON" ] || : > "$CRON"
+	chmod 600 "$CRON" 2>/dev/null || true
+	cat "$tmp" > "$CRON"
+	rm -f "$tmp"
+
+	/etc/init.d/cron restart >/dev/null 2>&1 || log "cron 重启失败，下次开机会再试"
+	if [ "$en" = "0" ]; then
+		log "已从 crontab 撤掉定时任务（enabled=0）"
+	else
+		log "定时任务已写入：$sched"
+	fi
+}
+
+start() { apply; }
+
+# 关机不撤 crontab：任务本来就该在下次开机后继续跑
+stop() { :; }
+
+reload() { apply; }
+
+status() {
+	echo "--- 配置 ---"
+	echo "enabled  = $(uci_get settings.enabled)"
+	echo "schedule = $(uci_get settings.schedule)"
+	echo "--- crontab ---"
+	if [ -f "$CRON" ] && grep -q "^$MARK_BEGIN" "$CRON" 2>/dev/null; then
+		grep -A1 "^$MARK_BEGIN" "$CRON"
+	else
+		echo "(没有安装定时任务)"
+	fi
+	echo "--- 最近 3 次 ---"
+	if [ -f /root/coremark-history.txt ]; then
+		tail -n 3 /root/coremark-history.txt
+	else
+		echo "(还没有成绩：coremark-bench 手动跑一次试试)"
+	fi
+}
