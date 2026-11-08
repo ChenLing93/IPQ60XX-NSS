@@ -1,0 +1,35 @@
+# 连接跟踪（conntrack）调优 —— 说明见 docs/PLUGINS.md 第 20 节
+#
+# 背景：抖音 / 红果这类字节系 App 全走 QUIC（UDP/443），每换一个视频分片、每换一个
+# CDN 节点就是一条新的五元组；UDP 没有挥手包，路由器只能靠超时回收。内核默认
+# udp_timeout_stream=180 秒，几台设备一起刷就能把 nf_conntrack 表顶满，表现是
+# 「看一会儿全网卡一下、过一会儿自己好」。
+#
+# 这里只改运行参数，不换包、不改内核；改完 /etc/init.d/conntrack-tune restart 即可。
+
+config conntrack 'settings'
+	# 总开关。0 = 完全不动系统默认值
+	option enabled '1'
+	# 表项上限。auto = 按内存自动分档（2G→262144 / 1G→131072 / 其它→65536）
+	# 也可以直接写数字，例如 '131072'
+	#
+	# 注意：nf_conntrack_max 不会随内存自动放大，OpenWrt 上通常固定 16384 或 65536，
+	# 插 2G 内存也一样 —— 这就是「内存够大但还是爆表」的原因。
+	option max 'auto'
+	# UDP 单向超时（秒）。只发不收的残留条目，内核默认 30
+	option udp_timeout '15'
+	# UDP 双向超时（秒）。QUIC 走这条，内核默认 180；60 秒对视频观感没有影响
+	option udp_timeout_stream '60'
+	# 已建立 TCP 的空闲回收（秒）。内核默认 7440，缩到 1 小时能腾出不少位置
+	option tcp_timeout_established '3600'
+
+config quic 'quic'
+	# 默认关闭。打开后，下面列表里的设备发往 UDP/443 的包会被丢掉，
+	# 抖音 / 红果会自动回落到 TCP/443（TCP 有挥手，表项立刻回收）。
+	#
+	# 代价（实测）：客户端会不停重试，CPU 会多干活；游戏机如果也在刷视频的
+	# 同一台路由器后面，可能出现 1~2 秒的抖动。所以只建议对电视/旧手机开。
+	option enabled '0'
+	# 设备 MAC，一行一台，例如：
+	# list mac 'aa:bb:cc:dd:ee:ff'
+	# 留空 = 不封任何设备

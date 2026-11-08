@@ -1,0 +1,12 @@
+# CoreMark 定时跑分 —— 说明见 docs/PLUGINS.md 第 19 节「定时跑分」
+#
+# 原理：/etc/init.d/coremark-bench 把下面这段 schedule 写进 /etc/crontabs/root
+# （带标记的独立区块，不会碰你手写的 cron 行），由 cron 定时调用
+# /usr/bin/coremark-bench --quiet。
+
+config bench 'settings'
+	# 总开关。0 = 从 crontab 里撤掉这段定时任务
+	option enabled '1'
+	# 标准 5 段 cron 表达式（分 时 日 月 周）。
+	# 默认每天 04:00：和 eMMC 周检（每周六 04:30）错开，又不占白天。
+	option schedule '0 4 * * *'
