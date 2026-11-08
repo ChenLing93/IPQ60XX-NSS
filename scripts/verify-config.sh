@@ -150,8 +150,8 @@ for p in kmod-ledtrig-activity kmod-ledtrig-pattern kmod-ledtrig-transient ; do
   has "$p" || echo "  [提示] $p 没选中（非必需）"
 done
 
-echo "========== 家用常用插件 =========="
-for p in luci-app-nlbwmon ; do
+echo "========== 家用常用插件 / 基准测试 =========="
+for p in luci-app-nlbwmon coremark ; do
   if has "$p"; then
     echo "  [OK] $p"
   else
@@ -204,6 +204,31 @@ if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
       not_pulled="$not_pulled $p"
     fi
   done
+
+  # 测速插件：所有机型都带（enable_thirdparty=no 时整段配置在 prepare-config.sh 里就被剔了）
+  echo "========== 测速（luci-app-netspeedtest）=========="
+  for p in luci-app-netspeedtest homebox ookla-speedtest ; do
+    if has "$p"; then
+      echo "  [OK] $p"
+    elif in_meta "$p"; then
+      echo "  [缺失] $p —— 源码和元数据都在，但没被选中（依赖没满足？见 PLUGINS.md 第 21 节）"
+      warn_missing="$warn_missing $p"
+    elif src_exists "$p"; then
+      echo "  [缺失] $p —— 源码在，但没进元数据（Makefile dump 失败？）"
+      warn_missing="$warn_missing $p"
+    else
+      echo "  [缺失] $p —— 源码没拉到（sparse clone 失败？）"
+      warn_missing="$warn_missing $p"
+      not_pulled="$not_pulled $p"
+    fi
+  done
+  # 内网测速靠 iperf3，缺了页面上那半截就没法用
+  if has iperf3 || has iperf3-ssl; then
+    echo "  [OK] iperf3（内网测速的服务端/客户端）"
+  else
+    echo "  [缺失] iperf3 —— 测速页的内网部分不可用"
+    warn_missing="$warn_missing iperf3"
+  fi
 else
   echo "========== 第三方插件：已跳过 =========="
 fi
