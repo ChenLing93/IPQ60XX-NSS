@@ -257,6 +257,20 @@ clone_pkg "https://github.com/ChenLing93/luci-theme-aurora.git" \
           "package/luci-theme-aurora" "Aurora 主题"
 clone_pkg "https://github.com/eamonxg/luci-app-aurora-config.git" \
           "package/luci-app-aurora-config" "Aurora 设置插件"
+# 测速三件套：sirpdboy/netspeedtest 仓库根目录下是三个独立包，只取需要的子目录
+# （整仓 clone 也行，但 sparse 更快，而且不会把 README/CI 之类的东西带进 package/）
+sparse_clone_pkg "https://github.com/sirpdboy/netspeedtest.git" \
+          "luci-app-netspeedtest" "package/luci-app-netspeedtest" "测速插件 luci-app-netspeedtest"
+sparse_clone_pkg "https://github.com/sirpdboy/netspeedtest.git" \
+          "homebox" "package/homebox" "HomeBox 内网测速服务端"
+# ookla-speedtest 在好几个中文 feed 里都有同名包，重复会导致 "duplicate package" 扫描报错。
+# feed 里已经有了就直接用它的，不再放自己的副本。
+if compgen -G "package/feeds/*/ookla-speedtest" >/dev/null 2>&1; then
+  echo "  feed 里已有 ookla-speedtest，跳过自带副本"
+else
+  sparse_clone_pkg "https://github.com/sirpdboy/netspeedtest.git" \
+            "ookla-speedtest" "package/ookla-speedtest" "Ookla speedtest CLI"
+fi
 # ----- 修正「字母开头的版本号」-----
 # 25.12 用的是 apk，apk 的版本号语法不允许以字母开头：
 #   PKG_VERSION:=v0.3.4  →  --info "version:v0.3.4-r1"
@@ -289,6 +303,7 @@ for pkg in luci-app-store luci-lib-taskd luci-lib-xterm taskd ddnsto luci-app-dd
            luci-app-wechatpush gecoosac luci-app-gecoosac luci-theme-aurora \
            luci-app-aurora-config luci-app-diskman luci-app-partexp luci-app-nlbwmon \
            luci-app-homeproxy luci-app-autoreboot sing-box \
+           luci-app-netspeedtest homebox ookla-speedtest \
            luci-lib-docker luci-app-dockerman dockerd containerd runc ; do
   for d in package/feeds/*/"$pkg" package/"$pkg" package/*/"$pkg" package/*/*/"$pkg"; do
     [ -f "$d/Makefile" ] || continue
