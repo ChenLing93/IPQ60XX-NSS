@@ -1,4 +1,4 @@
-# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼控制编译版 时间：2026年11月8日
+# IPQ6000 满血 NSS 云编译（WiFi / NOWIFI 两版）蓝色大肥鱼完全控制编译版  时间：2026年11月9日
 
 红米 AX5、红米 AX5 JDC（`redmi_ax5-jdcloud`）、兆能 ZN-M2、Link NN6000 v2（都是 IPQ6000）的 GitHub Actions 编译工程。
 一次编译产出**两套可选固件**：
@@ -26,8 +26,9 @@
 
 两版都带：**满血 NSS（NSS 11.4）+ miniupnpd(UPnP) + iStore + 微信推送 + DDNSTO + 集客软 AC
 + CoreMark 跑分（`/bin/coremark`，单核 -O3，每天 04:00 定时跑并记历史）**，
-以及按内存分档的 **conntrack 调优**（防抖音/红果刷爆表）。
-各插件怎么用见 [docs/PLUGINS.md](docs/PLUGINS.md)：跑分看第 19 节，conntrack 看第 20 节。
+以及按内存分档的 **conntrack 调优**（防抖音/红果刷爆表）和 **测速页**
+（`luci-app-netspeedtest`：网络 → NetSpeedtest，内网 iperf3 / Homebox + 外网 Ookla）。
+各插件怎么用见 [docs/PLUGINS.md](docs/PLUGINS.md)：跑分看第 19 节，conntrack 看第 20 节，测速看第 21 节。
 
 ---
 
@@ -130,7 +131,20 @@ libwrt-qualcommax-ipq60xx-zn_m2-squashfs-sysupgrade.bin
 libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 ```
 
-（不同机型可能还有 `factory.bin` / `*.ubi` 等，`机型-files.txt` 里列全。eMMC 机型首次刷入要用 `factory.bin`。）
+（同一次编译还会出 `factory.bin` / `*.itb` / `*.ubi`，`机型-files.txt` 里列全。）
+
+**什么时候刷哪个**：
+
+| 场景 | 用哪个文件 | 怎么刷 |
+| --- | --- | --- |
+| 机器已经在跑 OpenWrt | `*-squashfs-sysupgrade.bin` | 系统里 `sysupgrade -n 文件`，或 LuCI「系统 → 备份/升级」 |
+| 第一次刷（原厂 / 砖了 / 换系统） | `factory.bin`（eMMC 机型）、`*.itb`（NAND 机型） | uboot 的 Web 恢复页或 tftp |
+
+**别混着用**：`sysupgrade.bin` 是给系统内的升级程序吃的，uboot 不认；`factory.bin` / `.itb`
+是给 uboot 的，拿到系统里刷会把分区写歪。
+
+镜像本身不大（这几个机型一般 30~50MB），离 128MB flash 还远；编译完 `机型-files.txt` 和
+`collect-firmware.sh` 的尺寸提示都会告诉你实际多大。
 
 **固件版本里带编译时间**：版本号形如 `25.12-nss+nand.20261022-1630`（`<分支>+<机型类>.<北京时间>`），
 刷完在 LuCI 概览页的「固件版本」能看到；另外镜像里有 `/etc/build-info` 记录编译时间、commit、机型类、Docker 开关等，
@@ -138,7 +152,7 @@ libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 镜像**文件名不变**（用的是 `VERSION_DIST_SANITIZED`），所以刷机时认名字不会因为版本号变化而困惑。
 
 - 已在跑 OpenWrt：`sysupgrade -n 文件`（换源建议不保留配置）。
-- 原厂首次刷入：流程按机型不同（uboot Web / breed / 先刷过渡固件），按该机型的 OpenWrt 设备页操作。
+- 第一次刷（原厂 / uboot 下）：刷 `factory.bin` 或 `*.itb`，别拿 `sysupgrade.bin` 去喂 uboot。
 - 刷前**备份原厂分区**（尤其 ART/校准分区）。
 - **WiFi 版 ↔ NOWIFI 版可以互刷**（同机型 sysupgrade 直接刷），但刷 NOWIFI 后无线就没了，回退要重刷 WiFi 版。
 
@@ -170,6 +184,8 @@ libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 | 刷抖音/红果一会儿全网卡几秒，过会儿自己好 | conntrack 表被 QUIC 顶满。先 `/etc/init.d/conntrack-tune status` 看水位；不够就 `uci set conntrack.settings.max=...` 调高一档，或对电视单独打开 QUIC 封禁（PLUGINS.md 第 20 节） |
 | 开了 QUIC 封禁后游戏偶尔丢包 1~2 秒 | 客户端重试把 CPU 顶上去了。把游戏机移出 `conntrack.quic.mac` 列表，或直接关掉封禁只留调优 |
 | 想看跑分 / 成绩怎么突然掉了 | `coremark-bench --last 20` 看历史，`/etc/init.d/coremark-bench status` 看定时任务；掉 20% 以上会自动写 syslog（`logread \| grep coremark-bench`），多半是散热降频或后台有活 |
+| Releases / 运行记录堆太多 | Actions 里手动跑 **Cleanup runs & releases**：先 `dry_run=true` 预览，确认后关掉并在 `confirm` 填 `DELETE`。可保留最近 N 个 Release / N 次运行 |
+| 找不到「NetSpeedtest」菜单 | 它是第三方包：`enable_thirdparty=no` 时整段被剔掉；或者 sparse clone 没拉到（日志里搜「测速插件」）。见 PLUGINS.md 第 21 节 |
 | 编译 6 小时被杀 | 减少机型 / 关第三方插件 |
 | 发 Release 403 | Workflow permissions 没给 Read and write |
 
