@@ -1,0 +1,12 @@
+#!/bin/sh
+# 首次启动把 conntrack 调优服务挂进 rc.d。
+#
+# 为什么不在 overlay 里直接放 rc.d 符号链接：Windows 上打 zip / 复制会丢掉符号链接，
+# 到时候镜像里只剩下一个普通文件，服务根本不会启动。用 uci-defaults 落地最可靠，
+# 而且 sysupgrade -n 重置配置之后会重新跑一遍，依旧是生效的。
+
+[ -x /etc/init.d/conntrack-tune ] || exit 0
+
+/etc/init.d/conntrack-tune enable
+/etc/init.d/conntrack-tune start
+exit 0

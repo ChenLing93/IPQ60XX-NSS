@@ -1,0 +1,11 @@
+#!/bin/sh
+# 首次启动把 CoreMark 定时跑分挂进 rc.d。
+#
+# 和 conntrack 那个同一个套路：不在仓库里放 rc.d 符号链接（Windows 解压会丢），
+# 交给 uci-defaults 落地；sysupgrade -n 重置配置后会重跑一遍，照样生效。
+
+[ -x /etc/init.d/coremark-bench ] || exit 0
+
+/etc/init.d/coremark-bench enable
+/etc/init.d/coremark-bench start
+exit 0
