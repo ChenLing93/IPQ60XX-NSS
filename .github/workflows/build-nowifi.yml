@@ -46,6 +46,12 @@ on:
         default: 'all'
         type: choice
         options: ['all', 'nand', 'emmc']
+      cpu_boost:
+        description: 'CPU 频率：yes=补 1320/1440/1512MHz 三档 OPP，no=保持上游默认（最高 1200MHz）'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
       publish_release:
         description: '构建成功后发布 Release'
         required: false
@@ -76,4 +82,5 @@ jobs:
       strict_thirdparty: ${{ inputs.strict_thirdparty || 'yes' }}
       enable_docker: ${{ inputs.enable_docker || 'auto' }}
       device_class: ${{ inputs.device_class || 'all' }}
+      cpu_boost: ${{ inputs.cpu_boost || 'yes' }}
       publish_release: ${{ inputs.publish_release || 'yes' }}
