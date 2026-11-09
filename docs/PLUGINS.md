@@ -411,6 +411,37 @@ uci commit coremark-bench
 > 在 LuCI「计划任务」里手工保存过一次的话，会整份重写 `/etc/crontabs/root`，我们那段可能被冲掉；
 > 重启一次服务就回来了：`/etc/init.d/coremark-bench reload`。
 
+### 多核跑分与 CPU 频率（2026-11 补）
+
+固件默认改成：
+
+- **CoreMark 编成多线程**（4 线程），一个二进制能自选核数：
+  `coremark -c 1` 单核、`coremark -c 4` 四核（`coremark-bench` 默认跑满 4 核）；
+- **板级 dts 补了 1320 / 1440 / 1512 MHz 三档 OPP**，构建时由
+  `scripts/patch-cpu-opp.sh` 自动打，编译参数 `cpu_boost=no` 可关掉。
+
+为什么原来只有最高 1200：上游内核 `ipq6018.dtsi` 的 `cpu_opp_table` 只定义了
+864 / 1056 / 1200 三档，而 LibWrt 的 `ipq6018-common.dtsi` 里给 1320/1440/1512
+只写了 `opp-supported-hw`、**没写 `opp-hz`** —— 节点是空的，`cpufreq-dt` 直接跳过。
+板级 dts 里补一个 `opp-hz` 就够了（电压由 CPR / board 决定）。
+
+验证：
+
+```sh
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
+# 期望：864000 1056000 1200000 1320000 1440000 1512000
+```
+
+分数参考（-O3 + LTO，单核约 3.3~3.5 分/MHz）：
+
+| 频率 | 单核 | 四核 |
+| --- | --- | --- |
+| 1200 MHz | ~4010 | ~13000 |
+| 1512 MHz | ~5060 | ~17000 |
+
+风险：1512 是原厂档位（b佬的固件也在跑），但体质和散热因机器而异。
+不想要就在编译时选 `cpu_boost=no`，回到最高 1200MHz。
+
 ---
 
 ## 20. 连接跟踪（conntrack）与 QUIC
