@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: 'yes'
+      cpu_boost:
+        description: 'CPU 频率：yes=补 1320/1440/1512MHz 三档 OPP，no=保持上游默认（最高 1200MHz）'
+        required: false
+        type: string
+        default: 'yes'
 
 permissions:
   contents: write
@@ -225,6 +230,16 @@ jobs:
           # eMMC 机型才应该带 emmc-health，nand 机型上它只是躺在那儿占几 KB，无害
           echo "已注入："
           find "$SOURCE_DIR/package/base-files/files" -type f -printf '  %p\n'
+
+      - name: 补 CPU 高档 OPP（1320/1440/1512MHz）
+        if: ${{ inputs.cpu_boost != 'no' }}
+        run: |
+          set -euo pipefail
+          # 上游 ipq6018.dtsi 的 cpu_opp_table 只到 1200MHz，
+          # 1320/1440/1512 三档在 LibWrt 的 ipq6018-common.dtsi 里只有 opp-supported-hw、
+          # 没有 opp-hz，cpufreq-dt 会整条跳过。这里给板级 dts 补上 opp-hz。
+          bash scripts/patch-cpu-opp.sh \
+            "$SOURCE_DIR/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom"
 
       - name: 更新并安装 feeds
         working-directory: openwrt
