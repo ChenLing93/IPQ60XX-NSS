@@ -30,6 +30,7 @@ EXTRA_PACKAGES="${5:-}"
 ENABLE_DOCKER="${6:-no}"
 DEVICES="${7:-}"
 DEVICE_CLASS="${8:-all}"
+ENABLE_OAF="${9:-no}"
 
 if [ ! -f "$BASE" ]; then
   echo "::error::找不到公共配置 $BASE"
@@ -55,9 +56,10 @@ sed -i -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' "$RAW"
 # 3) 关掉第三方插件时，先按注释标记删掉整段（必须在过滤注释之前做）
 if [ "$ENABLE_THIRD_PARTY" != "yes" ]; then
   sed -i '/# >>> THIRD-PARTY-BEGIN/,/# <<< THIRD-PARTY-END/d' "$RAW"
-  # 测速插件也是从第三方仓库 clone 的，第三方整体关掉时一并剔除，否则会选一个不存在的包
+  # 测速插件、OAF 也是从第三方仓库 clone 的，第三方整体关掉时一并剔除
   sed -i '/# >>> NETSPEEDTEST-BEGIN/,/# <<< NETSPEEDTEST-END/d' "$RAW"
-  echo "已剔除第三方插件配置段（含测速）"
+  sed -i '/# >>> OAF-BEGIN/,/# <<< OAF-END/d' "$RAW"
+  echo "已剔除第三方插件配置段（含测速、OAF）"
 fi
 
 # 3b) 关掉 Docker 时删掉 Docker 段（独立开关：第三方插件开着、但不想塞 60MB 的 docker）
@@ -76,6 +78,12 @@ fi
 # 3d) 测速插件（NETSPEEDTEST 段）不再按机型类剔除：
 #     实测这几个机型的镜像离 128MB flash 还远（一般 30~50MB），15~20MB 的
 #     python3 + 两个二进制放得下。要关掉就删 base.config 里那一段，或 enable_thirdparty=no。
+
+# 3e) OAF（应用过滤）：默认关，只有 enable_oaf=yes 才保留配置段
+#     （它是 DPI，和 NSS 快转冲突；包也是第三方仓库克隆的）
+if [ "$ENABLE_OAF" != "yes" ]; then
+  sed -i '/# >>> OAF-BEGIN/,/# <<< OAF-END/d' "$RAW"
+fi
 
 # 4) 只保留 kconfig 认的行
 #    注意键名里会有连字符（kmod-qca-nss-drv、luci-app-store、miniupnpd-nftables），

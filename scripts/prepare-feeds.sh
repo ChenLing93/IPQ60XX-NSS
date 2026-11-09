@@ -14,6 +14,7 @@ fi
 EXTRA_FEEDS="${1:?用法: prepare-feeds.sh <feeds.extra.conf> [enable_thirdparty]}"
 ENABLE_THIRD_PARTY="${2:-yes}"
 ENABLE_DOCKER="${3:-no}"
+ENABLE_OAF="${4:-no}"
 # 相对路径转绝对，避免后面路径混乱
 case "$EXTRA_FEEDS" in
   /*) ;;
@@ -270,6 +271,14 @@ if compgen -G "package/feeds/*/ookla-speedtest" >/dev/null 2>&1; then
 else
   sparse_clone_pkg "https://github.com/sirpdboy/netspeedtest.git" \
             "ookla-speedtest" "package/ookla-speedtest" "Ookla speedtest CLI"
+fi
+# OAF 应用过滤（DPI）：仓库根下是 luci-app-oaf / oaf / open-app-filter 三个包，整仓 clone。
+# 默认不装（enable_oaf=no）；装了要和 NSS 快转二选一，见 PLUGINS.md 第 22 节。
+if [ "$ENABLE_OAF" = "yes" ]; then
+  clone_pkg "https://github.com/destan19/OpenAppFilter.git" \
+            "package/OpenAppFilter" "应用过滤 OAF"
+else
+  echo "  跳过 OAF（enable_oaf=$ENABLE_OAF）"
 fi
 # ----- 修正「字母开头的版本号」-----
 # 25.12 用的是 apk，apk 的版本号语法不允许以字母开头：

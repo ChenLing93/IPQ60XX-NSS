@@ -52,6 +52,12 @@ on:
         default: 'yes'
         type: choice
         options: ['yes', 'no']
+      enable_oaf:
+        description: 'OAF 应用过滤（DPI，会关闭 flow offloading）：yes/no'
+        required: false
+        default: 'no'
+        type: choice
+        options: ['no', 'yes']
       publish_release:
         description: '构建成功后发布 Release'
         required: false
@@ -83,4 +89,5 @@ jobs:
       enable_docker: ${{ inputs.enable_docker || 'auto' }}
       device_class: ${{ inputs.device_class || 'all' }}
       cpu_boost: ${{ inputs.cpu_boost || 'yes' }}
+      enable_oaf: ${{ inputs.enable_oaf || 'no' }}
       publish_release: ${{ inputs.publish_release || 'yes' }}

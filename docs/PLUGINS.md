@@ -588,6 +588,49 @@ iperf3 -c 192.168.10.254 -t 30 -P 4 -R     # 下行
 删掉 `config/base.config` 里 `# >>> NETSPEEDTEST-BEGIN` 到 `# <<< NETSPEEDTEST-END` 那三行；
 或者编译时把 `enable_thirdparty` 设成 `no`（测速段会跟着第三方段一起剔掉）。
 只想保留 CLI 不要页面：`apk add iperf3` 就够，不需要这一套。
+
+---
+
+## 22. OAF 应用过滤（可选，默认关）
+
+[OpenAppFilter](https://github.com/destan19/OpenAppFilter)（destan19）—— 按应用识别并管控的
+DPI 插件，支持抖音、B 站、游戏、社交几百种应用，适合家长控制。
+
+**默认不编**（`enable_oaf=no`）。要用就在触发构建时选 `enable_oaf=yes`。
+
+### 为什么默认关
+
+它是**逐包识别**的，必须看到每个包；而 NSS/flow offloading 之后包直接走硬件，
+钩子不会被调用 —— 表现是"识别不准、统计不对、长连接拦不住"。
+
+所以打开 `enable_oaf` 的固件，首次启动会执行
+`overlay/etc/uci-defaults/96-oaf-offload-off`，把软件和硬件 offload 都关掉：
+
+```sh
+uci set firewall.@defaults[0].flow_offloading='0'
+uci set firewall.@defaults[0].flow_offloading_hw='0'
+```
+
+代价：转发吞吐回到 CPU 上限（单流 600~900 Mbps，多流接近千兆）。
+**这是二选一，不是配置能绕过的。**
+
+### 装了哪三个包
+
+| 包 | 作用 |
+| --- | --- |
+| `luci-app-oaf` | LuCI 页面（服务 → 应用过滤） |
+| `oaf` | 守护进程，管理规则与统计 |
+| `open-app-filter` | 内核模块（netfilter 钩子 + 特征库） |
+
+由 `prepare-feeds.sh` 在 `enable_oaf=yes` 时整仓 clone 到 `package/OpenAppFilter`。
+
+### 风险
+
+1. **内核模块与版本绑定**。`open-app-filter` 在 6.12 上能不能编过没有保证；
+   编不过就把 `enable_oaf` 关回去，其它功能不受影响。
+2. **一次只能要一个**：OAF 与 NSS 快转互斥，别指望"开了 OAF 还能千兆"。
+3. 想同时要两者，只有一条路：主路由只转发（NSS 全开），把 OAF 放到旁路由上，
+   只让受管设备走旁路由。
 - **只删页面留 CLI**：`apk add iperf3` 就够，不需要这套（见上一节的说明）。
 
 

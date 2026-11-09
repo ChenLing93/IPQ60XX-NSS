@@ -50,6 +50,11 @@ on:
         required: false
         type: string
         default: 'yes'
+      enable_oaf:
+        description: 'OAF 应用过滤（DPI）：yes=编进固件并自动关闭 flow offloading；no=不带（默认）'
+        required: false
+        type: string
+        default: 'no'
 
 permissions:
   contents: write
@@ -107,6 +112,7 @@ jobs:
       STRICT_THIRD_PARTY: ${{ inputs.strict_thirdparty }}
       # auto 时按机型类决定（nand 不带、emmc 带），显式 yes/no 时以用户为准
       ENABLE_DOCKER: ${{ inputs.enable_docker == 'auto' && matrix.docker || inputs.enable_docker }}
+      ENABLE_OAF: ${{ inputs.enable_oaf }}
       # 镜像体积提醒阈值（collect-firmware.sh 读这个变量）：
       # nand 机 128MB flash，超过 70MB 基本刷不进去；emmc 机带 docker，200MB 以内都正常
       IMAGE_WARN_MB: ${{ matrix.class == 'nand' && '70' || '200' }}
@@ -247,7 +253,7 @@ jobs:
           EXTRA_FEEDS: ${{ github.workspace }}/config/feeds.extra.conf
         run: |
           set -euo pipefail
-          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" "$ENABLE_THIRD_PARTY" "$ENABLE_DOCKER"
+          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" "$ENABLE_THIRD_PARTY" "$ENABLE_DOCKER" "$ENABLE_OAF"
 
       - name: 生成并校验配置
         working-directory: openwrt
@@ -261,7 +267,8 @@ jobs:
             "${{ inputs.extra_packages }}" \
             "$ENABLE_DOCKER" \
             "$DEVICES" \
-            "${{ matrix.class }}"
+            "${{ matrix.class }}" \
+            "$ENABLE_OAF"
 
           # OpenWrt 会把 .config 当 makefile include，先自己验一遍：
           # 真有问题时这里就能指名道姓，而不是等 prepare-tmpinfo 报个空变量名
@@ -275,7 +282,7 @@ jobs:
           echo "  预检通过"
 
           make defconfig
-          bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY" "$STRICT_THIRD_PARTY" "$ENABLE_DOCKER" "${{ matrix.class }}"
+          bash ../scripts/verify-config.sh "$VARIANT" "$ENABLE_THIRD_PARTY" "$STRICT_THIRD_PARTY" "$ENABLE_DOCKER" "${{ matrix.class }}" "$ENABLE_OAF"
 
           # 额外包（运行时输入 extra_packages）单独再确认一遍：
           # kconfig 对不存在的符号是静默丢弃的，不查就等于没加。

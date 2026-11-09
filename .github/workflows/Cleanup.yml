@@ -1,8 +1,10 @@
 name: Cleanup runs & releases
+
 # 在 Actions 页面点 "Run workflow" 就跑，不需要本地装任何东西。
 # 用的是内置 GITHUB_TOKEN（下面的 permissions 已经给足），不用配 PAT。
 #
 # 建议顺序：先 dry_run=true 点一次看数量，确认无误再关掉 dry_run 并填 confirm=DELETE。
+
 on:
   workflow_dispatch:
     inputs:
@@ -41,12 +43,15 @@ on:
         required: false
         default: ''
         type: string
+
 permissions:
   actions: write     # 删 workflow run / artifact
   contents: write    # 删 release / tag
+
 concurrency:
   group: cleanup-runs-releases
   cancel-in-progress: false
+
 jobs:
   cleanup:
     runs-on: ubuntu-24.04
@@ -54,6 +59,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+
     steps:
       - name: 参数与二次确认
         env:
@@ -70,20 +76,24 @@ jobs:
           echo "删 run      : ${{ inputs.delete_runs }}"
           echo "删 artifact : ${{ inputs.delete_artifacts }}"
           echo "孤儿 tag    : ${{ inputs.purge_tags }}"
+
           if [ "$DRY" != "true" ] && [ "$CONFIRM" != "DELETE" ]; then
             echo "::error::真删需要在 confirm 输入框里填 DELETE（当前是 '$CONFIRM'）。先用 dry_run=true 预览一次。"
             exit 1
           fi
+
           # keep_* 只接受非负整数，写错了按 0（全删）处理，别让算术直接炸
           for v in "${{ inputs.keep_runs }}" "${{ inputs.keep_releases }}"; do
             case "$v" in
               ''|*[!0-9]*) echo "::error::keep_runs / keep_releases 只能是数字，收到的是 '$v'"; exit 1 ;;
             esac
           done
+
           # 先确认 token 确实能用、权限对
           gh api "repos/$REPO" --jq '"仓库 ok: \(.full_name)  private=\(.private)"'
           echo "token 权限检查（有没有 actions/contents 的写权限）——"
           gh api "repos/$REPO" --jq '.permissions' || true
+
       - name: 删除 Releases
         if: ${{ inputs.delete_releases }}
         env:
@@ -91,6 +101,7 @@ jobs:
           DRY: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+
           # API 默认按 published_at 倒序返回，正好是「最新的在前面」
           mapfile -t rows < <(
             gh api --paginate "repos/$REPO/releases?per_page=100" \
@@ -98,6 +109,7 @@ jobs:
           )
           total=${#rows[@]}
           echo "共 $total 个 Release，保留最近 $KEEP 个"
+
           n=0
           for ((i=KEEP; i<total; i++)); do
             IFS=$'\t' read -r ts id tag <<< "${rows[$i]}"
@@ -116,6 +128,7 @@ jobs:
             fi
           done
           echo "Release 处理完：$n 个"
+
       - name: 删除孤儿 tag
         if: ${{ inputs.purge_tags }}
         env:
@@ -129,6 +142,7 @@ jobs:
             gh api -X DELETE "repos/$REPO/git/refs/tags/$t" >/dev/null 2>&1 \
               && echo "  [ok] tag $t" || echo "  [跳过] tag $t（删不掉，可能被保护）"
           done
+
       - name: 删除运行记录
         if: ${{ inputs.delete_runs }}
         env:
@@ -136,12 +150,14 @@ jobs:
           DRY: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+
           mapfile -t ids < <(
             gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
               --jq '.workflow_runs[] | (.id|tostring)'
           )
           total=${#ids[@]}
           echo "共 $total 条运行记录，保留最近 $KEEP 条（本次运行 $GITHUB_RUN_ID 永远跳过）"
+
           n=0
           skip=0
           for ((i=0; i<total; i++)); do
@@ -162,6 +178,7 @@ jobs:
             fi
           done
           echo "运行记录处理完：删了 $n 条，失败 $skip 条"
+
       - name: 清理残留 artifact
         if: ${{ inputs.delete_artifacts }}
         env:
@@ -177,6 +194,7 @@ jobs:
             gh api -X DELETE "repos/$REPO/actions/artifacts/$id" >/dev/null 2>&1 \
               && echo "  [ok] artifact $name" || echo "  [跳过] artifact $name"
           done
+
       - name: 汇总
         if: always()
         env:
