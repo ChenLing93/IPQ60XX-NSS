@@ -249,8 +249,10 @@ if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
         not_pulled="$not_pulled $p"
       fi
     done
-    echo "  [!] 提醒：OAF 是 DPI，装上后 /etc/uci-defaults/96-oaf-offload-off 会关掉 flow offloading，"
-    echo "      NSS 硬件加速对转发流量失效，吞吐回落到 CPU 上限（约 600~900Mbps）。"
+    echo "  [!] 提醒：OAF 与 NSS 快转共存时的取舍——"
+    echo "      看「访问了哪些网站」没问题（域名在首包 SNI/Host 里，那时还没卸载）；"
+    echo "      但每个应用的流量统计会失真，长连接的阻断也可能拦不住。"
+    echo "      要完整管控就自己关一次 offload（PLUGINS.md 第 22 节），本固件不自动关。"
   else
     echo "========== OAF：已跳过（enable_oaf=$ENABLE_OAF）=========="
   fi

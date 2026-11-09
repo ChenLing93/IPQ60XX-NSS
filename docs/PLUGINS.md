@@ -598,21 +598,25 @@ DPI 插件，支持抖音、B 站、游戏、社交几百种应用，适合家�
 
 **默认不编**（`enable_oaf=no`）。要用就在触发构建时选 `enable_oaf=yes`。
 
-### 为什么默认关
+### 和 NSS 加速怎么共存
 
-它是**逐包识别**的，必须看到每个包；而 NSS/flow offloading 之后包直接走硬件，
-钩子不会被调用 —— 表现是"识别不准、统计不对、长连接拦不住"。
+结论是**能共存，但要分清用途**：
 
-所以打开 `enable_oaf` 的固件，首次启动会执行
-`overlay/etc/uci-defaults/96-oaf-offload-off`，把软件和硬件 offload 都关掉：
+| 用途 | NSS 开着行不行 |
+| --- | --- |
+| 看「某台设备访问了哪些网站」 | ✅ 行。域名在 ClientHello 的 SNI / HTTP 的 Host 里，那几个包还在软件路径，OAF 抓得到 |
+| 每个应用的流量统计 | ❌ 失真。卸载后的字节它看不到 |
+| 长连接阻断（视频、直播） | ⚠️ 可能拦不住，流已经进硬件了 |
+
+所以这版固件**不会**自动关闭 offload——保留 NSS 千兆，OAF 当"网站记录"用。
+
+真要完整管控（限速、按应用阻断），自己关一次，代价是吞吐回落到 CPU 上限：
 
 ```sh
 uci set firewall.@defaults[0].flow_offloading='0'
 uci set firewall.@defaults[0].flow_offloading_hw='0'
+uci commit firewall && /etc/init.d/firewall restart
 ```
-
-代价：转发吞吐回到 CPU 上限（单流 600~900 Mbps，多流接近千兆）。
-**这是二选一，不是配置能绕过的。**
 
 ### 装了哪三个包
 
@@ -628,9 +632,9 @@ uci set firewall.@defaults[0].flow_offloading_hw='0'
 
 1. **内核模块与版本绑定**。`open-app-filter` 在 6.12 上能不能编过没有保证；
    编不过就把 `enable_oaf` 关回去，其它功能不受影响。
-2. **一次只能要一个**：OAF 与 NSS 快转互斥，别指望"开了 OAF 还能千兆"。
-3. 想同时要两者，只有一条路：主路由只转发（NSS 全开），把 OAF 放到旁路由上，
-   只让受管设备走旁路由。
+2. **别指望"开着 NSS 还能按应用限速"**——那类需求必须关 offload。
+3. 想看更干净的网站访问记录，DNS 日志其实更直接：`uci set dhcp.@dnsmasq[0].logqueries='1'`，
+   或者装 AdGuard Home，两者都和 NSS 零冲突。
 - **只删页面留 CLI**：`apk add iperf3` 就够，不需要这套（见上一节的说明）。
 
 
