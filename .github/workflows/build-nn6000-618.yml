@@ -1,0 +1,168 @@
+name: Build NN6000 6.18 (NSS+PPE)
+
+# 单独一条实验线：Link NN6000 v2 + 内核 6.18 + NSS/PPE 双卸载
+# 源码：VIKINGYFY/immortalwrt（owrt 分支，6.18 + NSS + PPE）
+# 和主线（LibWrt 25.12 / 6.12）完全独立，互不影响。
+#
+# 只编这一台、只出 NOWIFI。产物名带 -618 前缀，方便和主线区分。
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '构建成功后发布 Release'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nn6000-618
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: https://github.com/VIKINGYFY/immortalwrt.git
+  SOURCE_BRANCH: owrt
+  DEVICE: link_nn6000-v2
+  BIN_DIR: bin/targets/qualcommax/ipq60xx
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 腾磁盘空间
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 克隆源码（6.18 树）
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            rm -rf openwrt
+            if git clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPO" openwrt; then
+              break
+            fi
+            echo "::warning::克隆失败，10 秒后重试（$i/3）"
+            sleep 10
+          done
+          test -d openwrt/.git
+          cd openwrt
+          echo "源码提交 : $(git log -1 --format='%h %ad %s' --date=short)"
+          echo "内核版本 : $(grep -m1 'KERNEL_PATCHVER' target/linux/qualcommax/Makefile | tr -d ' ' || echo '未找到')"
+
+      - name: 注入 rootfs 文件（默认 IP / conntrack / 跑分）
+        run: |
+          set -euo pipefail
+          mkdir -p openwrt/package/base-files/files
+          cp -a overlay/. openwrt/package/base-files/files/
+          for d in usr/bin etc/uci-defaults etc/init.d; do
+            if [ -d "openwrt/package/base-files/files/$d" ]; then
+              chmod 0755 "openwrt/package/base-files/files/$d"/* 2>/dev/null || true
+            fi
+          done
+          find openwrt/package/base-files/files -type f -printf '  %p\n'
+
+      - name: 更新 feeds
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 生成配置
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          cp ../config/nn6000-618.config .config
+          make defconfig
+          echo "===== 关键项确认 ====="
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || { echo "::error::没选到 ipq60xx 子平台（分支支持吗？）"; exit 1; }
+          if ! grep -q "^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y$" .config; then
+            echo "::error::该分支不包含机型 $DEVICE，支持的有："
+            grep -oE 'Device/[a-z0-9._-]+' target/linux/qualcommax/image/ipq60xx.mk | sed 's#Device/#  #' | sort -u || true
+            exit 1
+          fi
+          echo "  [OK] $DEVICE"
+          grep -E '^CONFIG_PACKAGE_(coremark|kmod-ath11k|wpad)' .config || true
+
+      - name: 开始编译（约 2~3 小时）
+        working-directory: openwrt
+        run: |
+          set -uo pipefail
+          LOG="$GITHUB_WORKSPACE/build-618.log"
+          make -j"$(nproc)" download >/dev/null 2>&1 || echo "::warning::部分包下载失败，先继续，缺包在编译阶段才会暴露"
+
+          if make -j"$(nproc)" 2>&1 | tee "$LOG"; then
+            echo "编译成功"
+            tail -15 "$LOG"
+            exit 0
+          fi
+          echo "::error::编译失败，最后 80 行如下"
+          tail -80 "$LOG"
+          exit 1
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-618-log-${{ github.run_number }}
+          path: build-618.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 收集产物
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ls -lh "openwrt/$BIN_DIR" || true
+          for f in "openwrt/$BIN_DIR"/*${DEVICE}*.bin \
+                   "openwrt/$BIN_DIR"/*${DEVICE}*.itb \
+                   "openwrt/$BIN_DIR"/*${DEVICE}*.ubi \
+                   "openwrt/$BIN_DIR"/*${DEVICE}*.tar; do
+            [ -f "$f" ] || continue
+            cp "$f" dist/
+            echo "  $(basename "$f") = $(( $(stat -c%s "$f") / 1048576 ))MB"
+          done
+          count=$(ls -1 dist | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::没有收集到 $DEVICE 的固件"
+            ls -lh "openwrt/$BIN_DIR" || true
+            exit 1
+          fi
+          echo "共 $count 个文件"
+          cp "openwrt/$BIN_DIR"/*.manifest dist/ 2>/dev/null || true
+          ( cd dist && sha256sum * > sha256sums.txt )
+
+      - name: 上传 artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nn6000-618-${{ github.run_number }}
+          path: dist/
+          retention-days: 14
+
+      - name: 发布 Release
+        if: success() && inputs.publish_release == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="nn6000-618-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$TAG" dist/* \
+            --title "NN6000 v2 6.18 (NSS+PPE) $TAG" \
+            --notes "Link NN6000 v2 / ImmortalWrt 6.18 / NSS+PPE 双卸载 / NOWIFI
+          源码：VIKINGYFY/immortalwrt@owrt
+          这是实验线，和主线的 6.12 NSS 固件不是一回事，刷之前先备份。"
+          echo "已发布 $TAG"
