@@ -80,6 +80,29 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: 拉测速插件（netspeedtest 三件套）
+        run: |
+          set -euo pipefail
+          clone_one() {
+            repo="$1"; src="$2"; dst="$3"; name="$4"
+            if [ -d "$dst" ]; then echo "  已存在: $dst"; return 0; fi
+            tmp="$(mktemp -d)"
+            if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1 \
+               && git -C "$tmp/repo" sparse-checkout set "$src" >/dev/null 2>&1 \
+               && [ -e "$tmp/repo/$src/Makefile" ]; then
+              mkdir -p "$(dirname "$dst")"
+              cp -a "$tmp/repo/$src" "$dst"
+              echo "  [ok] $name -> $dst"
+              rm -rf "$tmp"
+              return 0
+            fi
+            rm -rf "$tmp"
+            echo "::warning::$name 拉取失败，本次固件不含它（配置里的符号会被丢弃，不影响其它）"
+          }
+          clone_one "https://github.com/sirpdboy/netspeedtest.git" "luci-app-netspeedtest" "openwrt/package/luci-app-netspeedtest" "luci-app-netspeedtest"
+          clone_one "https://github.com/sirpdboy/netspeedtest.git" "homebox" "openwrt/package/homebox" "homebox"
+          clone_one "https://github.com/sirpdboy/netspeedtest.git" "ookla-speedtest" "openwrt/package/ookla-speedtest" "ookla-speedtest"
+
       - name: 生成配置
         working-directory: openwrt
         run: |
