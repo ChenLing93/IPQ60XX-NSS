@@ -17,7 +17,6 @@ ENABLE_THIRD_PARTY="${2:-yes}"
 STRICT_THIRD_PARTY="${3:-yes}"
 ENABLE_DOCKER="${4:-no}"
 DEVICE_CLASS="${5:-all}"
-ENABLE_OAF="${6:-no}"
 DEVICES="${DEVICES:-redmi_ax5 redmi_ax5-jdcloud zn_m2 link_nn6000-v2}"
 
 CONFIG_FILE=".config"
@@ -231,31 +230,6 @@ if [ "$ENABLE_THIRD_PARTY" = "yes" ]; then
     warn_missing="$warn_missing iperf3"
   fi
 
-  # OAF 应用过滤（默认关；enable_oaf=yes 才有这三个包）
-  if [ "$ENABLE_OAF" = "yes" ]; then
-    echo "========== OAF 应用过滤 =========="
-    for p in luci-app-oaf oaf open-app-filter ; do
-      if has "$p"; then
-        echo "  [OK] $p"
-      elif in_meta "$p"; then
-        echo "  [缺失] $p —— 源码和元数据都在，但没被选中（依赖没满足？见 PLUGINS.md 第 22 节）"
-        warn_missing="$warn_missing $p"
-      elif src_exists "$p"; then
-        echo "  [缺失] $p —— 源码在，但没进元数据（Makefile dump 失败？）"
-        warn_missing="$warn_missing $p"
-      else
-        echo "  [缺失] $p —— 源码没拉到（OAF 仓库 clone 失败？）"
-        warn_missing="$warn_missing $p"
-        not_pulled="$not_pulled $p"
-      fi
-    done
-    echo "  [!] 提醒：OAF 与 NSS 快转共存时的取舍——"
-    echo "      看「访问了哪些网站」没问题（域名在首包 SNI/Host 里，那时还没卸载）；"
-    echo "      但每个应用的流量统计会失真，长连接的阻断也可能拦不住。"
-    echo "      要完整管控就自己关一次 offload（PLUGINS.md 第 22 节），本固件不自动关。"
-  else
-    echo "========== OAF：已跳过（enable_oaf=$ENABLE_OAF）=========="
-  fi
 else
   echo "========== 第三方插件：已跳过 =========="
 fi
