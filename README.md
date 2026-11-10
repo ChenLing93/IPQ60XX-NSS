@@ -196,3 +196,26 @@ libwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin
 - NSS 驱动/固件、DDNSTO、集客 AC 都是**闭源二进制**，仅供个人自用。
 - 工作流只编译，不改分区表、不加后门，产物 = 标准 LibWrt 镜像 + 上述插件。
 - LibWrt 仓库 400MB+、kenzok8 feed 150MB+，首次 clone 慢属正常。
+
+---
+
+## 九、6.18 实验线（NN6000 v2 专用）
+
+主线是 LibWrt 25.12（内核 6.12 + NSS）。另有一条**完全独立**的实验线：
+
+| 项 | 值 |
+| --- | --- |
+| Workflow | `Build NN6000 6.18 (NSS+PPE)` |
+| 源码 | `VIKINGYFY/immortalwrt` 的 `owrt` 分支（内核 6.18，NSS 与 PPE 双卸载） |
+| 配置 | `config/nn6000-618.config` |
+| 机型 | 只有 `link_nn6000-v2`，只出 NOWIFI |
+| 产物 | Release tag `nn6000-618-YYYYMMDD-HHMM` |
+
+目的是**验证**：6.18 的 PPE 卸载在老 NSS 之外还带来多少收益。跑通之前，其它三台机器继续用 6.12 主线。
+
+带的东西：coremark（4 线程）、conntrack 调优 + QUIC 封禁（overlay 同一套）、UPnP、nlbwmon、iperf3、netspeedtest。
+
+没带的：iStore / HomeProxy / sing-box / 微信推送 / DDNSTO / 集客 AC —— 这些第三方包在 ImmortalWrt 快照上大概率编不过，等实验线跑通再说。
+
+刷完先确认：`uname -r` 是 6.18.x、LuCI 首页 `PPE: x/y  NSS: x/y` 两个计数都在涨。
+
