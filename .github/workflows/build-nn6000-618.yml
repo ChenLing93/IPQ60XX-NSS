@@ -61,6 +61,12 @@ jobs:
           echo "源码提交 : $(git log -1 --format='%h %ad %s' --date=short)"
           echo "内核版本 : $(grep -m1 'KERNEL_PATCHVER' target/linux/qualcommax/Makefile | tr -d ' ' || echo '未找到')"
 
+      - name: 修 dts 按键冲突（GPIO42 被 i2c 占用，删 wps 保 reset）
+        run: |
+          set -euo pipefail
+          bash scripts/patch-dts-keys.sh \
+            "openwrt/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom"
+
       - name: 注入 rootfs 文件（默认 IP / conntrack / 跑分）
         run: |
           set -euo pipefail
