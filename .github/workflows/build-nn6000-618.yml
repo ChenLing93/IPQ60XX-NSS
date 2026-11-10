@@ -103,6 +103,15 @@ jobs:
           clone_one "https://github.com/sirpdboy/netspeedtest.git" "homebox" "openwrt/package/homebox" "homebox"
           clone_one "https://github.com/sirpdboy/netspeedtest.git" "ookla-speedtest" "openwrt/package/ookla-speedtest" "ookla-speedtest"
 
+          # 这棵树的 python3 拆分和 25.12 不同，没有 python3-pkg-resources / python3-email；
+          # 依赖不满足会让整个 luci-app-netspeedtest 选不上，所以从它的依赖里摘掉。
+          mk="openwrt/package/luci-app-netspeedtest/Makefile"
+          if [ -f "$mk" ]; then
+            sed -i -e 's/+python3-pkg-resources//g' -e 's/+python3-email//g' "$mk"
+            echo "  已摘掉不存在的 python3 子包依赖"
+            grep -n 'LUCI_DEPENDS' "$mk" || true
+          fi
+
       - name: 生成配置
         working-directory: openwrt
         run: |
@@ -119,16 +128,14 @@ jobs:
             exit 1
           fi
 
-          if ! grep -q "^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y\$" .config; then
-            echo "::error::源码有 ${DEVICE}，但 .config 没选上 —— defconfig 把机型选择丢掉了"
-            echo "--- .config 里 TARGET 相关行 ---"
-            grep -E '^CONFIG_TARGET_(qualcommax|PROFILE|MULTI)' .config || true
-            echo "--- 配置片段的机型行 ---"
-            grep -E 'DEVICE_' ../config/nn6000-618.config || true
+          if ! grep -qE "^CONFIG_TARGET_PROFILE=\"DEVICE_${DEVICE}\"\$|^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y\$" .config; then
+            echo "::error::源码有 ${DEVICE}，但 .config 没选上 —— 当前选的是："
+            grep -E '^CONFIG_TARGET_(PROFILE|MULTI|qualcommax_ipq60xx_DEVICE_)' .config | head -5 || true
             exit 1
           fi
           echo "  [OK] ${DEVICE}"
-          grep -E '^CONFIG_PACKAGE_(coremark|kmod-ath11k|wpad)' .config || true
+          echo "  当前机型：$(grep -E '^CONFIG_TARGET_PROFILE=' .config || true)"
+          grep -E '^CONFIG_PACKAGE_(coremark|kmod-ath11k|wpad|luci-app-netspeedtest)' .config || true
 
       - name: 开始编译（约 2~3 小时）
         working-directory: openwrt
