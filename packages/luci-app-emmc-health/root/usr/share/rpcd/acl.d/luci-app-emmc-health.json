@@ -1,0 +1,11 @@
+{
+	"luci-app-emmc-health": {
+		"description": "读取 eMMC 的 EXT_CSD 健康数据",
+		"read": {
+			"file": {
+				"/usr/bin/emmc-health": [ "exec" ]
+			}
+		},
+		"write": {}
+	}
+}

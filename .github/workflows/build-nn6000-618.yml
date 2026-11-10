@@ -73,6 +73,14 @@ jobs:
           done
           find openwrt/package/base-files/files -type f -printf '  %p\n'
 
+      - name: 放入自建 LuCI 包（eMMC 健康页面）
+        run: |
+          set -euo pipefail
+          mkdir -p openwrt/package
+          cp -a packages/luci-app-emmc-health openwrt/package/
+          echo "已放入："
+          find openwrt/package/luci-app-emmc-health -type f | sed 's#openwrt/package/##'
+
       - name: 更新 feeds
         working-directory: openwrt
         run: |
@@ -87,7 +95,8 @@ jobs:
           EXTRA_FEEDS: ${{ github.workspace }}/config/feeds.extra.conf
         run: |
           # 复用主线那套：追加 kenzok8 等 feed、clone iStore / Aurora / HomeProxy 等非 feed 结构仓库
-          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" yes no no
+          # 第三个参数 yes = 同时装 Docker 那串包（dockerd/containerd/runc + luci-lib-docker）
+          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" yes yes no
 
       - name: 拉测速插件（netspeedtest 三件套）
         run: |
