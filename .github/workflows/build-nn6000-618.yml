@@ -155,6 +155,35 @@ jobs:
           echo "  当前机型：$(grep -E '^CONFIG_TARGET_PROFILE=' .config || true)"
           grep -E '^CONFIG_PACKAGE_(coremark|kmod-ath11k|wpad|luci-app-netspeedtest)' .config || true
 
+          # 逐个确认插件是否真的进了 .config（prepare-feeds 里那次快扫会误报，以这里为准）
+          echo "===== 插件确认（.config 实际状态）====="
+          missing=""
+          for p in luci-app-store taskd luci-lib-taskd luci-lib-xterm \
+                   luci-app-diskman luci-app-partexp luci-app-autoreboot \
+                   luci-theme-aurora luci-app-aurora-config \
+                   luci-app-ddnsto ddnsto luci-app-wechatpush \
+                   gecoosac luci-app-gecoosac \
+                   luci-app-dockerman luci-lib-docker dockerd containerd runc \
+                   luci-app-netspeedtest luci-app-nlbwmon luci-app-upnp \
+                   coremark mmc-utils luci-app-emmc-health ; do
+            if grep -q "^CONFIG_PACKAGE_${p}=y\$" .config; then
+              echo "  [OK]   $p"
+            else
+              echo "  [缺失] $p"
+              missing="$missing $p"
+            fi
+          done
+
+          # 自建的包必须进去，否则页面不会出现，直接失败省得白编
+          case " $missing " in
+            *" luci-app-emmc-health "*)
+              echo "::error::自建包 luci-app-emmc-health 没进 .config（scan 没吃到？）"
+              exit 1 ;;
+          esac
+          if [ -n "$missing" ]; then
+            echo "::warning::以下第三方包没进固件（这棵树上没有 / 依赖不满足）：$missing"
+          fi
+
       - name: 开始编译（约 2~3 小时）
         working-directory: openwrt
         run: |
