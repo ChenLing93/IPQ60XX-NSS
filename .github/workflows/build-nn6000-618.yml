@@ -110,13 +110,24 @@ jobs:
           cp ../config/nn6000-618.config .config
           make defconfig
           echo "===== 关键项确认 ====="
-          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || { echo "::error::没选到 ipq60xx 子平台（分支支持吗？）"; exit 1; }
-          if ! grep -q "^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y$" .config; then
-            echo "::error::该分支不包含机型 $DEVICE，支持的有："
-            grep -oE 'Device/[a-z0-9._-]+' target/linux/qualcommax/image/ipq60xx.mk | sed 's#Device/#  #' | sort -u || true
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || { echo "::error::没选到 ipq60xx 子平台（分支结构变了？）"; exit 1; }
+
+          # 先确认源码里到底有没有这个机型（和"配置没选上"是两回事）
+          if ! grep -q "^define Device/${DEVICE}\$" target/linux/qualcommax/image/ipq60xx.mk; then
+            echo "::error::源码里没有 ${DEVICE} 这个机型。该分支支持的机型："
+            grep -E '^define Device/' target/linux/qualcommax/image/ipq60xx.mk | sed 's#define Device/#  #'
             exit 1
           fi
-          echo "  [OK] $DEVICE"
+
+          if ! grep -q "^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y\$" .config; then
+            echo "::error::源码有 ${DEVICE}，但 .config 没选上 —— defconfig 把机型选择丢掉了"
+            echo "--- .config 里 TARGET 相关行 ---"
+            grep -E '^CONFIG_TARGET_(qualcommax|PROFILE|MULTI)' .config || true
+            echo "--- 配置片段的机型行 ---"
+            grep -E 'DEVICE_' ../config/nn6000-618.config || true
+            exit 1
+          fi
+          echo "  [OK] ${DEVICE}"
           grep -E '^CONFIG_PACKAGE_(coremark|kmod-ath11k|wpad)' .config || true
 
       - name: 开始编译（约 2~3 小时）
