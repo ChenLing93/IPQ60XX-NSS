@@ -129,8 +129,8 @@ jobs:
           fi
 
           if ! grep -qE "^CONFIG_TARGET_PROFILE=\"DEVICE_${DEVICE}\"\$|^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y\$" .config; then
-            echo "::error::源码有 ${DEVICE}，但 .config 没选上 —— 当前选的是："
-            grep -E '^CONFIG_TARGET_(PROFILE|MULTI|qualcommax_ipq60xx_DEVICE_)' .config | head -5 || true
+            echo "::error::源码有 ${DEVICE}，但 .config 没选上。全部 TARGET 行："
+            grep -E '^CONFIG_TARGET' .config | head -30 || true
             exit 1
           fi
           echo "  [OK] ${DEVICE}"
