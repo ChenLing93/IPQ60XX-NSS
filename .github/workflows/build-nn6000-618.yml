@@ -80,6 +80,15 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: 拉第三方插件（iStore / DiskMan / 微信推送 等，失败不阻断）
+        working-directory: openwrt
+        continue-on-error: true
+        env:
+          EXTRA_FEEDS: ${{ github.workspace }}/config/feeds.extra.conf
+        run: |
+          # 复用主线那套：追加 kenzok8 等 feed、clone iStore / Aurora / HomeProxy 等非 feed 结构仓库
+          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" yes no no
+
       - name: 拉测速插件（netspeedtest 三件套）
         run: |
           set -euo pipefail
