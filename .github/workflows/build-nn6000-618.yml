@@ -186,6 +186,13 @@ jobs:
               echo "::error::自建包 luci-app-emmc-health 没进 .config（scan 没吃到？）"
               exit 1 ;;
           esac
+          # 中文语言包必须有，否则 LuCI 永远是英文
+          if ! grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config; then
+            echo "::error::中文语言包没进 .config —— 检查 CONFIG_LUCI_LANG_zh_Hans 是否生效"
+            grep -E '^CONFIG_LUCI_LANG' .config || echo "  （.config 里没有任何 LUCI_LANG）"
+            exit 1
+          fi
+          echo "  [OK]   luci-i18n-base-zh-cn（中文界面）"
           if [ -n "$missing" ]; then
             echo "::warning::以下第三方包没进固件（这棵树上没有 / 依赖不满足）：$missing"
           fi
