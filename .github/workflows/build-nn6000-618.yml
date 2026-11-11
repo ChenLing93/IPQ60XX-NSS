@@ -141,8 +141,11 @@ jobs:
         run: |
           set -euo pipefail
           cp ../config/nn6000-618.config .config
+          make defconfig
 
-          # 版本号里带编译时间 + 源码 commit（LuCI 首页的 Firmware Version 就是它）
+          # 版本号必须写在 defconfig 之后：
+          # CONFIG_VERSION_NUMBER 在 Kconfig 里没有 prompt，kconfig 重写 .config 时会直接丢掉它，
+          # 但 make 仍然会读 .config 里的值（version.mk 就是 qstrip 这个变量）。
           STAMP="$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
           SRCREV="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
           VER="6.18-${STAMP}-${SRCREV}"
@@ -153,7 +156,6 @@ jobs:
           fi
           echo "编译版本号：$VER"
 
-          make defconfig
           echo "===== 关键项确认 ====="
           grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || { echo "::error::没选到 ipq60xx 子平台（分支结构变了？）"; exit 1; }
 
