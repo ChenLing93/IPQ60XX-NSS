@@ -1,0 +1,19 @@
+#!/bin/sh
+# UPnP：允许 WAN 是私网地址时也建端口映射。
+#
+# 两个名字，同一个底层选项：
+#   25.12 的 LuCI 叫「强制转发 / force_forwarding」
+#   master 的 LuCI 叫「Allow private IPv4 / ext_allow_private_ipv4」
+# 两个都写，谁被 init 读就谁生效（另一条线的 init 不认就自动忽略）。
+#
+# 用途：P2P 联机、BT、远程访问这类需要主动开端口的场景。
+# 注意：如果上游是运营商 CGNAT，这个开关只让"路由器愿意映射"，
+#       外网能不能进来还取决于运营商那层 NAT。
+
+[ -f /etc/config/upnpd ] || exit 0
+
+uci -q set upnpd.config.force_forwarding='1'
+uci -q set upnpd.config.ext_allow_private_ipv4='1'
+uci -q commit upnpd
+
+exit 0
