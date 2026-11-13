@@ -1,0 +1,9 @@
+#!/bin/sh
+# 默认主题设成 Vantage（卡片式仪表盘：网络路径、吞吐量、射频、客户端）。
+# 前提：镜像里装了 luci-theme-vantage（config 里已加，workflow 会 clone 源码）。
+# 没装的话 LuCI 会忽略这个路径、退回默认主题，不会白屏。
+
+uci -q set luci.main.mediaurlbase='/luci-static/vantage'
+uci -q commit luci
+
+exit 0
