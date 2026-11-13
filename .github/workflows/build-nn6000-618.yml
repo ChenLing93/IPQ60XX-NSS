@@ -104,20 +104,30 @@ jobs:
           # 第三个参数 yes = 同时装 Docker 那串包（dockerd/containerd/runc + luci-lib-docker）
           bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" yes yes no
 
-      - name: 拉 Vantage 主题（可选）
+      - name: 拉 Vantage 主题 + 仪表盘（可选）
         continue-on-error: true
         run: |
           set -euo pipefail
-          if [ -d openwrt/package/luci-theme-vantage ]; then
-            echo "  已存在"
-            exit 0
-          fi
-          if git clone --depth 1 https://github.com/anothaDev/luci-theme-vantage.git \
-               openwrt/package/luci-theme-vantage; then
-            echo "  [ok] Vantage 主题已放入 package/"
-          else
-            echo "::warning::Vantage 主题拉取失败，本次用默认主题"
-          fi
+          # 仓库根目录不是包，真正两个包在子目录里：luci-theme-vantage / luci-app-vantage
+          clone_one() {
+            repo="$1"; src="$2"; dst="$3"; name="$4"
+            if [ -d "$dst" ]; then echo "  已存在: $dst"; return 0; fi
+            tmp="$(mktemp -d)"
+            if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1 \
+               && git -C "$tmp/repo" sparse-checkout set "$src" >/dev/null 2>&1 \
+               && [ -e "$tmp/repo/$src/Makefile" ]; then
+              cp -a "$tmp/repo/$src" "$dst"
+              rm -rf "$tmp"
+              echo "  [ok] $name -> $dst"
+              return 0
+            fi
+            rm -rf "$tmp"
+            echo "::warning::$name 拉取失败，本次不含它"
+          }
+          clone_one "https://github.com/anothaDev/luci-theme-vantage.git" \
+                    "luci-theme-vantage" "openwrt/package/luci-theme-vantage" "Vantage 主题"
+          clone_one "https://github.com/anothaDev/luci-theme-vantage.git" \
+                    "luci-app-vantage" "openwrt/package/luci-app-vantage" "Vantage 仪表盘"
 
       - name: 拉测速插件（netspeedtest 三件套）
         run: |
