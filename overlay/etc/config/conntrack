@@ -17,9 +17,9 @@ config conntrack 'settings'
 	# 插 2G 内存也一样 —— 这就是「内存够大但还是爆表」的原因。
 	option max 'auto'
 	# UDP 单向超时（秒）。只发不收的残留条目，内核默认 30
-	option udp_timeout '15'
+	option udp_timeout '30'
 	# UDP 双向超时（秒）。QUIC 走这条，内核默认 180；60 秒对视频观感没有影响
-	option udp_timeout_stream '60'
+	option udp_timeout_stream '120'
 	# 已建立 TCP 的空闲回收（秒）。内核默认 7440，缩到 1 小时能腾出不少位置
 	option tcp_timeout_established '3600'
 

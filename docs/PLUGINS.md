@@ -477,8 +477,8 @@ cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
 | 参数 | 默认 | 2G（NN6000） | 1G（ZN-M2） | 其它（AX5） |
 | --- | --- | --- | --- | --- |
 | `nf_conntrack_max` | `auto` | 262144 | 131072 | 65536 |
-| `nf_conntrack_udp_timeout` | 15 | — | — | — |
-| `nf_conntrack_udp_timeout_stream` | 60 | — | — | — |
+| `nf_conntrack_udp_timeout` | 30 | — | — | — |
+| `nf_conntrack_udp_timeout_stream` | 120 | — | — | — |
 | `nf_conntrack_tcp_timeout_established` | 3600 | — | — | — |
 
 `auto` 是按 `/proc/meminfo` 的 MemTotal 现场算的，不用手填。

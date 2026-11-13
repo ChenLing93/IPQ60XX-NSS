@@ -54,8 +54,8 @@ apply_sysctl() {
 	[ "$max" -lt 1024 ] && max=1024
 	[ "$max" -gt 1048576 ] && max=1048576
 
-	to=$(uci_get settings.udp_timeout);              is_num "$to"     || to=15
-	stream=$(uci_get settings.udp_timeout_stream);   is_num "$stream" || stream=60
+	to=$(uci_get settings.udp_timeout);              is_num "$to"     || to=30
+	stream=$(uci_get settings.udp_timeout_stream);   is_num "$stream" || stream=120
 	tcp=$(uci_get settings.tcp_timeout_established); is_num "$tcp"    || tcp=3600
 
 	# 模块还没加载时先建表，顺便把哈希桶给到 max/4（至少 16384），
