@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/patch-dts-keys.sh \
-            "openwrt/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom"
+            "openwrt/target/linux/qualcommax/dts"
 
       - name: 注入 rootfs 文件（默认 IP / conntrack / 跑分）
         run: |

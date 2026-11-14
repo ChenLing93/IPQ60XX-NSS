@@ -45,3 +45,6 @@ for f in "$DTS_DIR"/ipq6000-link.dtsi "$DTS_DIR"/ipq6000-nn6000-v*.dts; do
 done
 
 echo "已处理 $fixed 个 dts"
+if [ "$fixed" -eq 0 ]; then
+  echo "::warning::一个 wps 键都没找到——检查 dts 路径是否正确（这棵树在 target/linux/qualcommax/dts/）"
+fi
