@@ -308,9 +308,24 @@ jobs:
         run: |
           set -euo pipefail
           TAG="nn6000-618-$(date -u +%Y%m%d-%H%M)"
+          SRCREV="$(git -C openwrt rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          BUILT="$(date -u '+%Y-%m-%d %H:%M')"
+
+          cat > notes.md <<EOF
+          IPQ6000（qualcommax/ipq60xx）+ 满血 NSS 固件 —— NOWIFI 版（不含 ath11k/wpad，开机不会起无线）
+
+          源码：https://github.com/VIKINGYFY/immortalwrt.git
+          分支：owrt（${SRCREV}）
+          内核：6.18.60 + NSS 12.5 + PPE 硬件卸载（IPQ6018 流表 2048 条）
+          机型：Link NN6000 v2（2G 内存 / 3.69G eMMC）
+          插件：Docker、iStore、DiskMan、微信推送、DDNSTO、集客软AC、miniupnpd（UPnP）、
+                netspeedtest、Vantage 主题、CPU 性能调节、终端、eMMC 健康、CoreMark
+          编译时间（UTC）：${BUILT}
+
+          刷机前请备份原厂分区，并确认机型与镜像文件名一致。
+          EOF
+
           gh release create "$TAG" dist/* \
-            --title "NN6000 v2 6.18 (NSS+PPE) $TAG" \
-            --notes "Link NN6000 v2 / ImmortalWrt 6.18 / NSS+PPE 双卸载 / NOWIFI
-          源码：VIKINGYFY/immortalwrt@owrt
-          这是实验线，和主线的 6.12 NSS 固件不是一回事，刷之前先备份。"
+            --title "nn6000-618 $TAG" \
+            --notes-file notes.md
           echo "已发布 $TAG"
