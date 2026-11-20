@@ -1,9 +1,22 @@
 #!/bin/sh
 # 默认主题设成 Vantage（卡片式仪表盘：网络路径、吞吐量、射频、客户端）。
-# 前提：镜像里装了 luci-theme-vantage（config 里已加，workflow 会 clone 源码）。
-# 没装的话 LuCI 会忽略这个路径、退回默认主题，不会白屏。
+#
+# 两条线共用这个 overlay：
+#   - 6.18 线：包里只有 Vantage，直接生效
+#   - 6.12 线：Aurora 的 uci-defaults 是 30_luci-theme-aurora，按文件名排序比本文件早，
+#              所以最终 mediaurlbase 会落在这里设的 vantage —— 想用回 Aurora 就在
+#              「系统 → 设计」里手动切，切过之后本脚本不会再覆盖（见下面标记）。
+#
+# 标记文件放在 /etc/config 下：保留数据升级时这个目录会被带走，
+# 所以用户自己换过主题后，升级不会再把主题改回 Vantage。
+
+MARK=/etc/config/.theme_initialized
+
+[ -f "$MARK" ] && exit 0
+[ -f /etc/config/luci ] || exit 0
 
 uci -q set luci.main.mediaurlbase='/luci-static/vantage'
 uci -q commit luci
+touch "$MARK"
 
 exit 0
