@@ -37,7 +37,7 @@ on:
         type: string
         default: 'auto'
       device_class:
-        description: '机型类：all=nand+emmc 两个 job 并行，nand=AX5/ZN-M2，emmc=AX5 JDC/NN6000 v2'
+        description: '机型类：all=nand+emmc 两个 job 并行，nand=AX5/ZN-M2，emmc=NN6000 v2'
         required: false
         type: string
         default: 'all'
@@ -80,7 +80,7 @@ jobs:
           # nand：128MB flash，docker 放不下 → 不带
           # emmc：eMMC，空间够 → 默认带 docker
           nand='{"class":"nand","devices":"redmi_ax5 zn_m2","docker":"no"}'
-          emmc='{"class":"emmc","devices":"redmi_ax5-jdcloud link_nn6000-v2","docker":"yes"}'
+          emmc='{"class":"emmc","devices":"link_nn6000-v2","docker":"yes"}'
           case "$cls" in
             all)  m="{\"include\":[$nand,$emmc]}" ;;
             nand) m="{\"include\":[$nand]}" ;;
@@ -230,6 +230,17 @@ jobs:
           # eMMC 机型才应该带 emmc-health，nand 机型上它只是躺在那儿占几 KB，无害
           echo "已注入："
           find "$SOURCE_DIR/package/base-files/files" -type f -printf '  %p\n'
+
+      - name: 放入自建 eMMC 健康页面包（与 6.18 线同步）
+        run: |
+          set -euo pipefail
+          if [ -d packages/luci-app-emmc-health ]; then
+            rm -rf "$SOURCE_DIR/package/luci-app-emmc-health"
+            cp -a packages/luci-app-emmc-health "$SOURCE_DIR/package/"
+            echo "  [ok] package/luci-app-emmc-health"
+          else
+            echo "::warning::仓库里没有 packages/luci-app-emmc-health，本次不含该页面"
+          fi
 
       - name: 补 CPU 高档 OPP（1320/1440/1512MHz）
         if: ${{ inputs.cpu_boost != 'no' }}

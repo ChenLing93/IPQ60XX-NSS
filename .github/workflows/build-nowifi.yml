@@ -41,7 +41,7 @@ on:
         type: choice
         options: ['auto', 'no', 'yes']
       device_class:
-        description: '机型类：all=nand+emmc 并行两个 job，nand=AX5/ZN-M2，emmc=AX5 JDC/NN6000 v2'
+        description: '机型类：all=nand+emmc 并行两个 job，nand=AX5/ZN-M2，emmc=NN6000 v2'
         required: false
         default: 'all'
         type: choice

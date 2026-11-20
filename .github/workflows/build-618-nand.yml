@@ -1,0 +1,346 @@
+name: Build AX5/ZN-M2 6.18 (NSS+PPE, NAND)
+
+# 6.18 实验线的 NAND 机型版：红米 AX5 / 兆能 ZN-M2（128MB flash）
+# 源码：VIKINGYFY/immortalwrt（owrt 分支，6.18 + NSS + PPE）
+# 和主线（LibWrt 25.12 / 6.12）完全独立，互不影响。
+#
+# 只出 NOWIFI；不带 Docker / HomeProxy（128MB flash 放不下），
+# 插件集合与 6.18 eMMC 线保持一致（iStore / 测速 / 主题 / 调频 / 终端 / eMMC 健康除外）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '构建成功后发布 Release'
+        required: false
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nand-618
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: https://github.com/VIKINGYFY/immortalwrt.git
+  SOURCE_BRANCH: owrt
+  BIN_DIR: bin/targets/qualcommax/ipq60xx
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        device:
+          - redmi_ax5
+          - zn_m2
+
+    env:
+      DEVICE: ${{ matrix.device }}
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 腾磁盘空间
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 克隆源码（6.18 树）
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            rm -rf openwrt
+            if git clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPO" openwrt; then
+              break
+            fi
+            echo "::warning::克隆失败，10 秒后重试（$i/3）"
+            sleep 10
+          done
+          test -d openwrt/.git
+          cd openwrt
+          echo "源码提交 : $(git log -1 --format='%h %ad %s' --date=short)"
+          echo "内核版本 : $(grep -m1 'KERNEL_PATCHVER' target/linux/qualcommax/Makefile | tr -d ' ' || echo '未找到')"
+
+      - name: 修 dts 按键冲突（GPIO42 被 i2c 占用，删 wps 保 reset）
+        run: |
+          set -euo pipefail
+          bash scripts/patch-dts-keys.sh \
+            "openwrt/target/linux/qualcommax/dts"
+
+      - name: 注入 rootfs 文件（默认 IP / conntrack / 跑分）
+        run: |
+          set -euo pipefail
+          mkdir -p openwrt/package/base-files/files
+          cp -a overlay/. openwrt/package/base-files/files/
+          for d in usr/bin etc/uci-defaults etc/init.d; do
+            if [ -d "openwrt/package/base-files/files/$d" ]; then
+              chmod 0755 "openwrt/package/base-files/files/$d"/* 2>/dev/null || true
+            fi
+          done
+          find openwrt/package/base-files/files -type f -printf '  %p\n'
+
+      - name: 放入自建 LuCI 包（eMMC 健康页面）
+        run: |
+          set -euo pipefail
+          mkdir -p openwrt/package
+          cp -a packages/luci-app-emmc-health openwrt/package/
+          echo "已放入："
+          find openwrt/package/luci-app-emmc-health -type f | sed 's#openwrt/package/##'
+
+      - name: 更新 feeds
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 拉第三方插件（iStore / DiskMan / 微信推送 等，失败不阻断）
+        working-directory: openwrt
+        continue-on-error: true
+        env:
+          EXTRA_FEEDS: ${{ github.workspace }}/config/feeds.extra.conf
+        run: |
+          # 复用主线那套：追加 kenzok8 等 feed、clone iStore / Aurora / HomeProxy 等非 feed 结构仓库
+          # 第三个参数 yes = 同时装 Docker 那串包（dockerd/containerd/runc + luci-lib-docker）
+          bash ../scripts/prepare-feeds.sh "$EXTRA_FEEDS" yes yes no
+
+      - name: 拉 Vantage 主题 + 仪表盘（可选）
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # 仓库根目录不是包，真正两个包在子目录里：luci-theme-vantage / luci-app-vantage
+          clone_one() {
+            repo="$1"; src="$2"; dst="$3"; name="$4"
+            if [ -d "$dst" ]; then echo "  已存在: $dst"; return 0; fi
+            tmp="$(mktemp -d)"
+            if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1 \
+               && git -C "$tmp/repo" sparse-checkout set "$src" >/dev/null 2>&1 \
+               && [ -e "$tmp/repo/$src/Makefile" ]; then
+              cp -a "$tmp/repo/$src" "$dst"
+              rm -rf "$tmp"
+              echo "  [ok] $name -> $dst"
+              return 0
+            fi
+            rm -rf "$tmp"
+            echo "::warning::$name 拉取失败，本次不含它"
+          }
+          clone_one "https://github.com/anothaDev/luci-theme-vantage.git" \
+                    "luci-theme-vantage" "openwrt/package/luci-theme-vantage" "Vantage 主题"
+          clone_one "https://github.com/anothaDev/luci-theme-vantage.git" \
+                    "luci-app-vantage" "openwrt/package/luci-app-vantage" "Vantage 仪表盘"
+
+      - name: 拉测速插件（netspeedtest 三件套）
+        run: |
+          set -euo pipefail
+          clone_one() {
+            repo="$1"; src="$2"; dst="$3"; name="$4"
+            if [ -d "$dst" ]; then echo "  已存在: $dst"; return 0; fi
+            tmp="$(mktemp -d)"
+            if git clone --depth 1 --filter=blob:none --sparse "$repo" "$tmp/repo" >/dev/null 2>&1 \
+               && git -C "$tmp/repo" sparse-checkout set "$src" >/dev/null 2>&1 \
+               && [ -e "$tmp/repo/$src/Makefile" ]; then
+              mkdir -p "$(dirname "$dst")"
+              cp -a "$tmp/repo/$src" "$dst"
+              echo "  [ok] $name -> $dst"
+              rm -rf "$tmp"
+              return 0
+            fi
+            rm -rf "$tmp"
+            echo "::warning::$name 拉取失败，本次固件不含它（配置里的符号会被丢弃，不影响其它）"
+          }
+          clone_one "https://github.com/sirpdboy/netspeedtest.git" "luci-app-netspeedtest" "openwrt/package/luci-app-netspeedtest" "luci-app-netspeedtest"
+          clone_one "https://github.com/sirpdboy/netspeedtest.git" "homebox" "openwrt/package/homebox" "homebox"
+          clone_one "https://github.com/sirpdboy/netspeedtest.git" "ookla-speedtest" "openwrt/package/ookla-speedtest" "ookla-speedtest"
+
+          # 这棵树的 python3 拆分和 25.12 不同，没有 python3-pkg-resources / python3-email；
+          # 依赖不满足会让整个 luci-app-netspeedtest 选不上，所以从它的依赖里摘掉。
+          mk="openwrt/package/luci-app-netspeedtest/Makefile"
+          if [ -f "$mk" ]; then
+            sed -i -e 's/+python3-pkg-resources//g' -e 's/+python3-email//g' "$mk"
+            echo "  已摘掉不存在的 python3 子包依赖"
+            grep -n 'LUCI_DEPENDS' "$mk" || true
+          fi
+
+      - name: 生成配置
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          cp ../config/nn6000-618-nand.config .config
+          # 一份配置编多个机型：这里把 TARGET_DEVICE 换成当前 matrix 的机型
+          sed -i "s#^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_.*=y#CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y#" .config
+          grep -q "^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y$" .config \
+            || { echo "::error::机型 ${DEVICE} 没写进 .config"; exit 1; }
+          echo "  机型：${DEVICE}"
+          make defconfig
+
+          # 版本号必须写在 defconfig 之后：
+          # CONFIG_VERSION_NUMBER 在 Kconfig 里没有 prompt，kconfig 重写 .config 时会直接丢掉它，
+          # 但 make 仍然会读 .config 里的值（version.mk 就是 qstrip 这个变量）。
+          STAMP="$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
+          SRCREV="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
+          VER="6.18-${STAMP}-${SRCREV}"
+          if grep -q '^CONFIG_VERSION_NUMBER=' .config; then
+            sed -i "s#^CONFIG_VERSION_NUMBER=.*#CONFIG_VERSION_NUMBER=\"${VER}\"#" .config
+          else
+            echo "CONFIG_VERSION_NUMBER=\"${VER}\"" >> .config
+          fi
+          echo "编译版本号：$VER"
+
+          echo "===== 关键项确认 ====="
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || { echo "::error::没选到 ipq60xx 子平台（分支结构变了？）"; exit 1; }
+
+          # 先确认源码里到底有没有这个机型（和"配置没选上"是两回事）
+          if ! grep -q "^define Device/${DEVICE}\$" target/linux/qualcommax/image/ipq60xx.mk; then
+            echo "::error::源码里没有 ${DEVICE} 这个机型。该分支支持的机型："
+            grep -E '^define Device/' target/linux/qualcommax/image/ipq60xx.mk | sed 's#define Device/#  #'
+            exit 1
+          fi
+
+          if ! grep -qE "^CONFIG_TARGET_PROFILE=\"DEVICE_${DEVICE}\"\$|^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${DEVICE}=y\$" .config; then
+            echo "::error::源码有 ${DEVICE}，但 .config 没选上。全部 TARGET 行："
+            grep -E '^CONFIG_TARGET' .config | head -30 || true
+            exit 1
+          fi
+          echo "  [OK] ${DEVICE}"
+          echo "  当前机型：$(grep -E '^CONFIG_TARGET_PROFILE=' .config || true)"
+          grep -E '^CONFIG_PACKAGE_(coremark|kmod-ath11k|wpad|luci-app-netspeedtest)' .config || true
+
+          # 逐个确认插件是否真的进了 .config（prepare-feeds 里那次快扫会误报，以这里为准）
+          echo "===== 插件确认（.config 实际状态）====="
+          missing=""
+          for p in luci-app-store taskd luci-lib-taskd luci-lib-xterm \
+                   luci-app-diskman luci-app-partexp luci-app-autoreboot \
+                   luci-theme-aurora luci-app-aurora-config \
+                   luci-app-ddnsto ddnsto luci-app-wechatpush \
+                   gecoosac luci-app-gecoosac \
+                   luci-app-dockerman luci-lib-docker dockerd containerd runc \
+                   luci-app-netspeedtest luci-app-nlbwmon luci-app-upnp \
+                   coremark mmc-utils luci-app-emmc-health ; do
+            if grep -q "^CONFIG_PACKAGE_${p}=y\$" .config; then
+              echo "  [OK]   $p"
+            else
+              echo "  [缺失] $p"
+              missing="$missing $p"
+            fi
+          done
+
+          # NAND 机型不带 eMMC 健康页面，这里只做提示
+          case " $missing " in
+            *" luci-app-emmc-health "*)
+              echo "  [--]  luci-app-emmc-health 不在 NAND 配置里（预期）" ;;
+          esac
+          # 中文语言包必须有，否则 LuCI 永远是英文
+          if ! grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config; then
+            echo "::error::中文语言包没进 .config —— 检查 CONFIG_LUCI_LANG_zh_Hans 是否生效"
+            grep -E '^CONFIG_LUCI_LANG' .config || echo "  （.config 里没有任何 LUCI_LANG）"
+            exit 1
+          fi
+          echo "  [OK]   luci-i18n-base-zh-cn（中文界面）"
+
+          # 版本号必须落进 .config，否则首页还是 SNAPSHOT
+          if ! grep -q "CONFIG_VERSION_NUMBER=\"${VER}\"" .config; then
+            echo "::error::版本号没写进 .config（defconfig 覆盖了？）"
+            grep -E '^CONFIG_VERSION' .config || true
+            exit 1
+          fi
+          echo "  [OK]   版本号 ${VER}"
+          if [ -n "$missing" ]; then
+            echo "::warning::以下第三方包没进固件（这棵树上没有 / 依赖不满足）：$missing"
+          fi
+
+      - name: 开始编译（约 2~3 小时）
+        working-directory: openwrt
+        run: |
+          set -uo pipefail
+          LOG="$GITHUB_WORKSPACE/build-618.log"
+          make -j"$(nproc)" download >/dev/null 2>&1 || echo "::warning::部分包下载失败，先继续，缺包在编译阶段才会暴露"
+
+          if make -j"$(nproc)" 2>&1 | tee "$LOG"; then
+            echo "编译成功"
+            tail -15 "$LOG"
+            exit 0
+          fi
+          echo "::error::编译失败，最后 80 行如下"
+          tail -80 "$LOG"
+          exit 1
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-618-nand-log-${{ matrix.device }}-${{ github.run_number }}
+          path: build-618.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 收集产物
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ls -lh "openwrt/$BIN_DIR" || true
+          for f in "openwrt/$BIN_DIR"/*${DEVICE}*.bin \
+                   "openwrt/$BIN_DIR"/*${DEVICE}*.itb \
+                   "openwrt/$BIN_DIR"/*${DEVICE}*.ubi \
+                   "openwrt/$BIN_DIR"/*${DEVICE}*.tar; do
+            [ -f "$f" ] || continue
+            cp "$f" dist/
+            echo "  $(basename "$f") = $(( $(stat -c%s "$f") / 1048576 ))MB"
+          done
+          count=$(ls -1 dist | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::没有收集到 $DEVICE 的固件"
+            ls -lh "openwrt/$BIN_DIR" || true
+            exit 1
+          fi
+          echo "共 $count 个文件"
+          cp "openwrt/$BIN_DIR"/*.manifest dist/ 2>/dev/null || true
+          ( cd dist && sha256sum * > sha256sums.txt )
+
+      - name: 上传 artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nand-618-${{ matrix.device }}-${{ github.run_number }}
+          path: dist/
+          retention-days: 14
+
+      - name: 发布 Release
+        if: success() && inputs.publish_release == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="nand618-$(date -u +%Y%m%d-%H%M)-${DEVICE}"
+          SRCREV="$(git -C openwrt rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          BUILT="$(date -u '+%Y-%m-%d %H:%M')"
+
+          cat > notes.md <<EOF
+          IPQ6000（qualcommax/ipq60xx）+ 满血 NSS 固件 —— NOWIFI 版（不含 ath11k/wpad，开机不会起无线）
+
+          机型：${DEVICE}（NAND 128MB）
+          源码：https://github.com/VIKINGYFY/immortalwrt.git
+          分支：owrt（${SRCREV}）
+          内核：6.18.60 + NSS 12.5 + PPE 硬件卸载（IPQ6018 流表 2048 条）
+          机型：Link NN6000 v2（2G 内存 / 3.69G eMMC）
+          插件：Docker、iStore、DiskMan、微信推送、DDNSTO、集客软AC、miniupnpd（UPnP）、
+                netspeedtest、Vantage 主题、CPU 性能调节、终端、eMMC 健康、CoreMark
+          编译时间（UTC）：${BUILT}
+
+          刷机前请备份原厂分区，并确认机型与镜像文件名一致。
+          EOF
+
+          gh release create "$TAG" dist/* \
+            --title "618 NAND $DEVICE $TAG" \
+            --notes-file notes.md
+          echo "已发布 $TAG"

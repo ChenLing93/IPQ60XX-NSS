@@ -257,6 +257,12 @@ clone_pkg "https://github.com/ChenLing93/luci-theme-aurora.git" \
           "package/luci-theme-aurora" "Aurora 主题"
 clone_pkg "https://github.com/eamonxg/luci-app-aurora-config.git" \
           "package/luci-app-aurora-config" "Aurora 设置插件"
+# Vantage 主题 + 仪表盘（与 6.18 线同步）
+# 仓库根目录不是包，两个包在子目录里，必须 sparse 取，否则 Makefile 找不到
+sparse_clone_pkg "https://github.com/anothaDev/luci-theme-vantage.git" \
+          "luci-theme-vantage" "package/luci-theme-vantage" "Vantage 主题"
+sparse_clone_pkg "https://github.com/anothaDev/luci-theme-vantage.git" \
+          "luci-app-vantage" "package/luci-app-vantage" "Vantage 仪表盘"
 # 测速三件套：sirpdboy/netspeedtest 仓库根目录下是三个独立包，只取需要的子目录
 # （整仓 clone 也行，但 sparse 更快，而且不会把 README/CI 之类的东西带进 package/）
 sparse_clone_pkg "https://github.com/sirpdboy/netspeedtest.git" \
