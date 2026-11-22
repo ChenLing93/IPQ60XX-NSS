@@ -84,7 +84,7 @@ nft_flush() {
 }
 
 apply_quic() {
-	local en macs m setmac="" rules
+	local en macs m setmac="" rules lan
 
 	en=$(uci_get quic.enabled)
 	if [ "$en" != "1" ]; then
@@ -102,15 +102,30 @@ apply_quic() {
 		esac
 	done
 
-	if [ -z "$setmac" ]; then
-		log "QUIC 封禁开着，但 mac 列表为空 —— 不生成规则"
-		nft_flush
-		return 0
-	fi
-
 	# 关键：hook prerouting priority raw（-300），比 conntrack（-200）早，
 	# 所以被丢的包根本不会建 conntrack 表项。放在 fw4 的 forward 链里丢，
 	# 每个包都要先建表再丢，反而把表顶得更高、CPU 更热。
+	#
+	# 名单为空时按「全 LAN 客户端」处理（这就是编译进固件时的默认行为）：
+	# 只匹配 br-lan 进来的包，路由器自己发起的 QUIC 不受影响。
+	if [ -z "$setmac" ]; then
+		lan=$(uci_get quic.iface)
+		[ -n "$lan" ] || lan="br-lan"
+		rules="table inet $TABLE {
+	chain prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		iifname \"$lan\" udp dport 443 counter drop
+	}
+}"
+		nft_flush
+		if printf '%s\n' "$rules" | nft -f - 2>/dev/null; then
+			log "QUIC 已封（prerouting/raw，全部 LAN 客户端，iifname $lan）"
+		else
+			log "nft 规则加载失败，本次没封 —— 不影响上面的 sysctl"
+		fi
+		return 0
+	fi
+
 	rules="table inet $TABLE {
 	set quic_mac {
 		type ether_addr
@@ -128,6 +143,10 @@ apply_quic() {
 	else
 		log "nft 规则加载失败，本次没封 —— 不影响上面的 sysctl"
 	fi
+}
+
+quic() {
+	apply_quic
 }
 
 start() {

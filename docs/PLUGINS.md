@@ -467,9 +467,11 @@ cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
 
 | 文件 | 作用 |
 | --- | --- |
-| `overlay/etc/init.d/conntrack-tune` | 开机（S15，先于 firewall）套用调优参数，可选生成 QUIC 封禁规则 |
+| `overlay/etc/init.d/conntrack-tune` | 开机（S15，先于 firewall）套用调优参数；QUIC 规则也可以手动 `conntrack-tune quic` 重装 |
+| `overlay/etc/init.d/conntrack-quic` | **S99**，等 firewall 起来之后再装一次 QUIC 规则（否则可能被 fw4 启动时冲掉，这就是「配置写着 enabled=1 但规则不在了」的原因） |
+| `overlay/etc/hotplug.d/iface/99-conntrack-quic` | WAN 口 up 时补一次规则，兜住 firewall reload |
 | `overlay/etc/config/conntrack` | UCI 配置，所有开关都在这里 |
-| `overlay/etc/uci-defaults/98-conntrack-tune` | 首次启动把服务 enable 进 rc.d |
+| `overlay/etc/uci-defaults/98-conntrack-tune` | 首次启动把**两个**服务 enable 进 rc.d |
 | `overlay/etc/modprobe.d/99-nf-conntrack.conf` | 尽力把哈希桶设成 65536（模块先被加载的话这项不生效） |
 
 默认值（都可在 `/etc/config/conntrack` 里改）：
@@ -498,30 +500,44 @@ cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
 uci set conntrack.settings.max=131072 ; uci commit conntrack
 ```
 
-### 可选：按设备封 QUIC
+### QUIC 封禁（默认已开）
+
+从 2026-11-22 那版起，`conntrack.quic.enabled` **默认就是 1**：
+`mac` 列表为空 → **封全部 LAN 客户端**（`iifname br-lan udp dport 443 drop`，路由器自身发出的 QUIC 不受影响）。
 
 ```sh
+# 全屋封（默认就是这样，不用动）
 uci set conntrack.quic.enabled=1
+uci -q delete conntrack.quic.mac
+
+# 只封某几台（填了列表就只按列表走）
 uci add_list conntrack.quic.mac='aa:bb:cc:dd:ee:ff'
+
+# 完全不要
+uci set conntrack.quic.enabled=0
+
 uci commit conntrack
-/etc/init.d/conntrack-tune restart
+/etc/init.d/conntrack-quic restart      # 规则在 S99 服务里，改完重启它
 ```
 
-规则是 `table inet conntrack_guard` 里 `prerouting priority raw` 的那条，
-匹配 `ether saddr` 后丢掉 `udp dport 443`。**位置很关键**：
+规则是 `table inet conntrack_guard` 里 `prerouting priority raw` 的那条。**位置很关键**：
 
 | 放在哪 | conntrack 表项 | 代价 |
 | --- | --- | --- |
 | LuCI 自定义规则（`fw4` 的 forward 链） | **照建不误**：先建表再丢 | 表没省下来，CPU 还多了一次丢弃 + 客户端重试 |
 | 本固件的 `prerouting/raw`（-300，早于 conntrack 的 -200） | 一条都不建 | 只有一次 set 查找 |
 
+> **曾经踩过的坑**：规则原来只在 S15（firewall 之前）装一次，fw4 启动重建规则集时会把它冲掉，
+> 所以会出现「配置明明 enabled=1，`nft list table inet conntrack_guard` 却是空的」。
+> 现在拆成 S99 的 `conntrack-quic` + WAN ifup 的 hotplug 兜底，两种情况都补得回来。
+
 ### 两个坑
 
 1. **封 QUIC 会让 CPU 忙起来**。客户端 QUIC 失败后会不停重试、并回落 TCP，包量翻倍。
    表现是 CPU 偶尔冲到 50%，同一台路由器后面的游戏出现 1~2 秒的丢包抖动。
-   所以默认是关的，只建议对电视/旧手机开，**游戏机别进列表**。
+   开着觉得影响游戏，就 `enabled=0`，或者只把游戏机之外的设备填进 mac 列表。
 2. **MAC 匹配有前提**。设备必须和路由器在同一个二层（直连或桥接的 AP）。中间再过一层
-   路由器（双重 NAT）就匹配不到了，那种情况只能改成按 IP 匹配。
+   路由器（双重 NAT）就匹配不到了，那种情况用默认的「全 LAN」模式即可（它按接口匹配，不看 MAC）。
 
 ### 验证到底有没有用
 

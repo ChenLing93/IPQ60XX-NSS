@@ -1,12 +1,39 @@
 #!/bin/sh
-# 首次启动把 conntrack 调优服务挂进 rc.d。
+# 首次启动把 conntrack 调优 / QUIC 封禁服务挂进 rc.d。
 #
 # 为什么不在 overlay 里直接放 rc.d 符号链接：Windows 上打 zip / 复制会丢掉符号链接，
 # 到时候镜像里只剩下一个普通文件，服务根本不会启动。用 uci-defaults 落地最可靠，
-# 而且 sysupgrade -n 重置配置之后会重新跑一遍，依旧是生效的。
+# 而且 sysupgrade 重置配置之后会重新跑一遍，依旧是生效的。
+#
+# 两个服务分工：
+#   conntrack-tune  (S15) → nf_conntrack 表上限 / UDP·TCP 超时
+#   conntrack-quic  (S99) → 等 firewall 起来后再装 nft 封禁规则（否则会被 fw4 冲掉）
 
 [ -x /etc/init.d/conntrack-tune ] || exit 0
 
+# 兼容保留数据升级：
+# 早期版本 quic.enabled 默认是 0，旧 /etc/config/conntrack 会盖住新固件的默认值 1，
+# 表现就是「刷了带封禁的固件，规则却没有」。这里只迁移一次，之后完全以用户的值为准。
+if [ "$(uci -q get conntrack.quic.migrated)" != "1" ]; then
+	uci -q set conntrack.quic.enabled='1'
+	uci -q set conntrack.quic.migrated='1'
+	uci -q commit conntrack
+fi
+
+# 同理：旧的 UDP 超时（30/120）也会盖住新的 20/60
+if [ "$(uci -q get conntrack.settings.timeouts_migrated)" != "1" ]; then
+	uci -q set conntrack.settings.udp_timeout='20'
+	uci -q set conntrack.settings.udp_timeout_stream='60'
+	uci -q set conntrack.settings.timeouts_migrated='1'
+	uci -q commit conntrack
+fi
+
 /etc/init.d/conntrack-tune enable
 /etc/init.d/conntrack-tune start
+
+if [ -x /etc/init.d/conntrack-quic ]; then
+	/etc/init.d/conntrack-quic enable
+	/etc/init.d/conntrack-quic start
+fi
+
 exit 0

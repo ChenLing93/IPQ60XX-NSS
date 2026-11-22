@@ -82,7 +82,7 @@ jobs:
           set -euo pipefail
           mkdir -p openwrt/package/base-files/files
           cp -a overlay/. openwrt/package/base-files/files/
-          for d in usr/bin etc/uci-defaults etc/init.d; do
+          for d in usr/bin etc/uci-defaults etc/init.d etc/hotplug.d/iface; do
             if [ -d "openwrt/package/base-files/files/$d" ]; then
               chmod 0755 "openwrt/package/base-files/files/$d"/* 2>/dev/null || true
             fi

@@ -1,0 +1,18 @@
+#!/bin/sh
+# firewall 每次因为接口变化 reload 之后，顺手把 QUIC 封禁规则补回去。
+# fw4 reload 一般只删自己的 inet fw4 表，但个别路径会重刷整个 ruleset，
+# 所以这里兜一层：WAN 口 up 时重装一次，代价是一次 nft 调用。
+#
+# 幂等：conntrack-tune quic 内部会先 flush 再建，重复执行没有副作用。
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+case "$INTERFACE" in
+	wan|wan6|pppoe-wan) ;;
+	*) exit 0 ;;
+esac
+
+[ -x /etc/init.d/conntrack-tune ] || exit 0
+/etc/init.d/conntrack-tune quic 2>/dev/null
+
+exit 0

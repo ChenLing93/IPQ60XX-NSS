@@ -1,0 +1,28 @@
+#!/bin/sh /etc/rc.common
+# 在 firewall 启动之后再装一次 QUIC 封禁规则。
+#
+# 为什么需要它：conntrack-tune 是 START=15（为了抢在 firewall 之前设 nf_conntrack 的
+# hashsize），而 fw4 启动时会重建自己的表；在某些版本上会把我们提前建好的
+# inet conntrack_guard 表一起冲掉，表现就是「配置写着 enabled=1，但规则不在了」。
+#
+# 所以拆成两步：
+#   conntrack-tune (S15)   → sysctl（表上限、UDP/TCP 超时）
+#   conntrack-quic (S99)   → 等 fw4 起来，再把 nft 规则装回去
+
+START=99
+STOP=01
+USE_PROCD=0
+
+start() {
+	[ -x /etc/init.d/conntrack-tune ] || return 0
+	/etc/init.d/conntrack-tune quic
+}
+
+stop() {
+	nft delete table inet conntrack_guard 2>/dev/null || true
+}
+
+reload() {
+	stop
+	start
+}
