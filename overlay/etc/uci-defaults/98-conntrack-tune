@@ -12,11 +12,15 @@
 [ -x /etc/init.d/conntrack-tune ] || exit 0
 
 # 兼容保留数据升级：
-# 早期版本 quic.enabled 默认是 0，旧 /etc/config/conntrack 会盖住新固件的默认值 1，
-# 表现就是「刷了带封禁的固件，规则却没有」。这里只迁移一次，之后完全以用户的值为准。
-if [ "$(uci -q get conntrack.quic.migrated)" != "1" ]; then
-	uci -q set conntrack.quic.enabled='1'
-	uci -q set conntrack.quic.migrated='1'
+# 早期版本 quic.enabled 默认是 0 / 1 都出现过，旧 /etc/config/conntrack 会盖住
+# 新固件的默认值。这里只迁移一次，之后完全以用户的值为准。
+# 现在默认走「定时收割」（reap）而不是全封 QUIC。
+if [ "$(uci -q get conntrack.reap.migrated)" != "1" ]; then
+	uci -q set conntrack.quic.enabled='0'
+	uci -q set conntrack.reap.enabled='1'
+	[ -n "$(uci -q get conntrack.reap.age)" ]  || uci -q set conntrack.reap.age='25'
+	[ -n "$(uci -q get conntrack.reap.port)" ] || uci -q set conntrack.reap.port='443'
+	uci -q set conntrack.reap.migrated='1'
 	uci -q commit conntrack
 fi
 
@@ -26,6 +30,16 @@ if [ "$(uci -q get conntrack.settings.timeouts_migrated)" != "1" ]; then
 	uci -q set conntrack.settings.udp_timeout_stream='60'
 	uci -q set conntrack.settings.timeouts_migrated='1'
 	uci -q commit conntrack
+fi
+
+# ---- 定时收割：每分钟清一次空闲 UDP 流 ----
+if [ -x /usr/bin/conntrack-reap ]; then
+	mkdir -p /etc/crontabs
+	touch /etc/crontabs/root
+	if ! grep -q 'conntrack-reap' /etc/crontabs/root 2>/dev/null; then
+		echo '* * * * * /usr/bin/conntrack-reap' >> /etc/crontabs/root
+	fi
+	/etc/init.d/cron restart 2>/dev/null || true
 fi
 
 /etc/init.d/conntrack-tune enable

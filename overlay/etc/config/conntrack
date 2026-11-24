@@ -24,18 +24,28 @@ config conntrack 'settings'
 	option tcp_timeout_established '3600'
 
 config quic 'quic'
-	# 编译进固件时默认打开（2026-11-22 起）。
-	# 打开后，下面列表里的设备发往 UDP/443 的包会被丢掉，
-	# 抖音 / 红果会自动回落到 TCP/443（TCP 有挥手，表项立刻回收）。
+	# 默认关闭（2026-11-25 起）：全封 QUIC 太粗暴，YouTube / 部分游戏只认 QUIC，
+	# 封了会逼它们降级重试、CPU 反而更忙。
+	# 现在推荐用下面的「定时收割」（config reap），只清空闲流、不影响活跃连接。
 	#
-	# **mac 列表为空 = 封全部 LAN 客户端**（只匹配 br-lan 进来的包，
-	# 路由器自己发起的 QUIC 不受影响）。想只封特定设备就填 mac 列表。
-	#
-	# 代价（实测）：客户端会不停重试，CPU 会多干活；游戏机如果也在刷视频的
-	# 同一台路由器后面，可能出现 1~2 秒的抖动。
-	# 完全不要就改 enabled='0'，然后 /etc/init.d/conntrack-quic restart。
-	option enabled '1'
+	# 真要对某几台设备彻底封 QUIC，把它打开并填 mac 列表：
+	#   打开后，列表里的设备发往 UDP/443 的包在 prerouting/raw 就被丢掉，
+	#   conntrack 表项一条都不会建（抖音/红果会自动回落 TCP/443）。
+	#   mac 列表为空 = 封全部 LAN 客户端（只匹配 br-lan 进来的包）。
+	option enabled '0'
 	# 可选的 LAN 接口名（默认 br-lan）
 	# option iface 'br-lan'
 	# 设备 MAC，一行一台；留空 = 封全部
 	# list mac 'aa:bb:cc:dd:ee:ff'
+
+config reap 'reap'
+	# 定时清理「活得太久」的 UDP 连接（每分钟一次，由 cron 触发）。
+	# 只删空闲超时时间的条目，不碰正在传数据的流。
+	option enabled '1'
+	# 空闲多少秒就清掉。太小会误杀（比如游戏 30 秒才发一次保活包），
+	# 建议 20~40。抖动明显就往上调。
+	option age '25'
+	# 只清这个目标端口的 UDP；0 = 所有 UDP
+	option port '443'
+	# 1 = 有清理动作时写 syslog（logger -t conntrack-reap）
+	option log '0'

@@ -1,0 +1,105 @@
+#!/bin/sh
+# 清理「活得太久」的 UDP 连接条目（主要是 QUIC / 抖音 / 红果这类）。
+#
+# 为什么需要：UDP 没有挥手包，客户端关页面、切走分片时路由器根本不知道，
+# 只能等超时。大量 QUIC 流会把 nf_conntrack 和 PPE 流表一点点占满，
+# 到一定比例就开始丢包、视频卡顿。
+#
+# 做法：每分钟扫一遍 IPv4 的 UDP 连接，把「空闲时间 ≥ age 秒」的条目从 conntrack 删掉。
+# 空闲时间 = 该条目的初始超时 - 内核报的剩余超时：
+#    未收到回包（UNREPLIED）→ 初始 udp_timeout（默认 20）
+#    已建立双向           → 初始 udp_timeout_stream（默认 60）
+#
+# 配置（/etc/config/conntrack）：
+#   config reap 'reap'
+#       option enabled '1'    # 总开关
+#       option age '25'       # 空闲多少秒就清（太小会误杀活跃流）
+#       option port '443'     # 只清这个目标端口；0 = 所有 UDP
+#       option log '0'        # 1 = 有清理动作时写 syslog
+#
+# 用法：conntrack-reap [-n 只打印] [-v 打印条数]
+
+CONF=conntrack
+dry=0
+verbose=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-n|--dry-run) dry=1 ;;
+		-v|--verbose) verbose=1 ;;
+		-h|--help) echo "用法: $0 [-n] [-v]"; exit 0 ;;
+		*) echo "未知参数: $1" >&2; exit 1 ;;
+	esac
+	shift
+done
+
+uci_get() { uci -q get "$CONF.$1" 2>/dev/null; }
+is_num() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+en=$(uci_get reap.enabled)
+[ "$en" = "0" ] && exit 0
+
+age=$(uci_get reap.age);   is_num "$age"  || age=25
+port=$(uci_get reap.port); is_num "$port" || port=443
+do_log=$(uci_get reap.log)
+[ "$age" -lt 5 ] && age=5
+
+command -v conntrack >/dev/null 2>&1 || exit 0
+
+to=$(cat /proc/sys/net/netfilter/nf_conntrack_udp_timeout 2>/dev/null)
+stream=$(cat /proc/sys/net/netfilter/nf_conntrack_udp_timeout_stream 2>/dev/null)
+is_num "$to" || to=20
+is_num "$stream" || stream=60
+
+list=$(conntrack -L -f ipv4 -p udp 2>/dev/null)
+
+# awk 只挑「该删的」，输出成一行行 conntrack -D 命令
+cmds=$(printf '%s\n' "$list" | awk -v AGE="$age" -v PORT="$port" \
+	-v TO="$to" -v STREAM="$stream" '
+function field(prefix,   i, a, n) {
+	n = split($0, a, " ")
+	for (i = 1; i <= n; i++)
+		if (index(a[i], prefix "=") == 1) return substr(a[i], length(prefix) + 2)
+	return ""
+}
+$1 == "udp" {
+	remain = $3 + 0
+	init = (index($0, "UNREPLIED") > 0) ? TO : STREAM
+	idle = init - remain
+	if (idle < AGE) next
+
+	sp = field("sport"); dp = field("dport")
+	if (PORT != 0 && dp != PORT) next
+
+	src = field("src"); dst = field("dst")
+	if (src == "" || dst == "" || sp == "" || dp == "") next
+	printf "conntrack -D -p udp --orig-src %s --orig-dst %s --sport %s --dport %s\n", src, dst, sp, dp
+}')
+
+count=0
+[ -n "$cmds" ] && count=$(printf '%s\n' "$cmds" | grep -c '^conntrack')
+
+if [ "$dry" = "1" ]; then
+	echo "将清理 $count 条（age≥${age}s，port=$port）"
+	printf '%s\n' "$cmds"
+	exit 0
+fi
+
+[ "$count" -eq 0 ] && { [ "$verbose" = "1" ] && echo "无需清理"; exit 0; }
+
+tmp="/tmp/.reap.$$"
+: > "$tmp"
+printf '%s\n' "$cmds" | while IFS= read -r c; do
+	[ -n "$c" ] || continue
+	sh -c "$c" >/dev/null 2>&1 && echo ok >> "$tmp"
+done
+done_n=$(wc -l < "$tmp" 2>/dev/null)
+rm -f "$tmp"
+is_num "$done_n" || done_n=0
+
+[ "$verbose" = "1" ] && echo "已清理 $done_n 条（age≥${age}s，port=$port）"
+if [ "$do_log" = "1" ] && [ "$done_n" -gt 0 ]; then
+	logger -t conntrack-reap "清理 $done_n 条空闲≥${age}s 的 UDP 流"
+fi
+
+exit 0
